@@ -57,10 +57,24 @@ export default async function DashboardPage() {
   ];
 
   const opsStats = [
-    { label: "Total Leads", value: leads.count ?? 0, href: "/leads" },
-    { label: "Follow-ups Due Today", value: dueToday.count ?? 0, href: "/tasks" },
-    { label: "Overdue", value: overdue.count ?? 0, href: "/tasks", alert: (overdue.count ?? 0) > 0 },
-    { label: "No Next Step", value: noNextStep.count ?? 0, href: "/tasks", alert: (noNextStep.count ?? 0) > 0 },
+    {
+      label: "Total Leads", value: leads.count ?? 0, href: "/leads",
+      hint: "All leads in your warehouse. Click to open the leads table.",
+    },
+    {
+      label: "Follow-ups Due Today", value: dueToday.count ?? 0, href: "/tasks",
+      hint: "Pending tasks due today. Click to work through them.",
+    },
+    {
+      label: "Overdue", value: overdue.count ?? 0, href: "/tasks",
+      alert: (overdue.count ?? 0) > 0,
+      hint: "Pending tasks past their due date — handle these first.",
+    },
+    {
+      label: "No Next Step", value: noNextStep.count ?? 0, href: "/tasks",
+      alert: (noNextStep.count ?? 0) > 0,
+      hint: "Leads you've contacted that have no pending follow-up task — nothing will remind you about them. Open each and log an action or add a task.",
+    },
   ];
 
   return (
@@ -104,7 +118,7 @@ export default async function DashboardPage() {
         <h2 className="mb-3 text-sm font-semibold text-muted-foreground">OPERATIONS</h2>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {opsStats.map((s) => (
-            <Link key={s.label} href={s.href}>
+            <Link key={s.label} href={s.href} title={s.hint}>
               <Card className="transition-colors hover:bg-accent/50">
                 <CardHeader className="pb-1">
                   <CardTitle className="text-sm font-medium text-muted-foreground">{s.label}</CardTitle>

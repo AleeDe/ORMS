@@ -16,6 +16,9 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import {
   Mail, Reply, Phone, PhoneCall, CalendarCheck, StickyNote, Send,
@@ -238,7 +241,20 @@ export default function LeadDetailPage({
           )}
         </div>
         {noNextStep && (
-          <Badge variant="destructive" className="text-sm">⚠ No Next Step</Badge>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="destructive" className="cursor-help text-sm">
+                  ⚠ No Next Step
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-64">
+                You&rsquo;ve contacted this lead but there&rsquo;s no pending follow-up task, so
+                nothing will remind you to touch them again. Quick-log an action below (most
+                create a follow-up task automatically) to clear this warning.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
       </div>
 
