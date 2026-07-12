@@ -5,7 +5,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
-import { todayStr } from "@/lib/dates";
+import {
+  fetchNotificationFeed, subscribeSeen, getSeenRaw, getSeenRawServer,
+} from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -39,25 +41,19 @@ const nav = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
+// Unseen notifications: feed items whose keys the user hasn't viewed on the
+// Notifications page yet (visiting the page marks everything seen).
 function useAlertCount() {
   const supabase = createClient();
-  const { data } = useQuery({
-    queryKey: ["alert-count"],
+  const { data: items } = useQuery({
+    queryKey: ["notification-feed"],
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
-    queryFn: async () => {
-      const today = todayStr();
-      const [due, overdue, noNext] = await Promise.all([
-        supabase.from("tasks").select("id", { count: "exact", head: true })
-          .eq("status", "pending").eq("due_date", today),
-        supabase.from("tasks").select("id", { count: "exact", head: true })
-          .eq("status", "pending").lt("due_date", today),
-        supabase.from("no_next_step_leads").select("id", { count: "exact", head: true }),
-      ]);
-      return (due.count ?? 0) + (overdue.count ?? 0) + (noNext.count ?? 0);
-    },
+    queryFn: () => fetchNotificationFeed(supabase),
   });
-  return data ?? 0;
+  const seenRaw = useSyncExternalStore(subscribeSeen, getSeenRaw, getSeenRawServer);
+  const seen = new Set<string>(JSON.parse(seenRaw));
+  return (items ?? []).filter((i) => !seen.has(i.key)).length;
 }
 
 function NavLinks({

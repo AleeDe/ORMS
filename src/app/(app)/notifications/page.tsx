@@ -1,25 +1,22 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
-import { todayStr } from "@/lib/dates";
+import { fetchNotificationFeed, markSeen } from "@/lib/notifications";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Bell, AlertTriangle, Clock, CalendarClock } from "lucide-react";
 
-type Item = {
-  key: string;
-  icon: React.ElementType;
-  severity: "info" | "warn" | "critical";
-  title: string;
-  body: string;
-  href: string;
-};
+const SEVERITY_ICONS = {
+  critical: AlertTriangle,
+  warn: AlertTriangle,
+  info: Clock,
+} as const;
 
 export default function NotificationsPage() {
   const supabase = createClient();
-  const today = todayStr();
 
   const { data: settings } = useQuery({
     queryKey: ["settings"],
@@ -33,48 +30,13 @@ export default function NotificationsPage() {
     queryKey: ["notification-feed"],
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
-    queryFn: async () => {
-      const [due, overdue, noNext] = await Promise.all([
-        supabase
-          .from("tasks")
-          .select("id, title, due_date, leads(id, business_name)")
-          .eq("status", "pending").eq("due_date", today).limit(50),
-        supabase
-          .from("tasks")
-          .select("id, title, due_date, leads(id, business_name)")
-          .eq("status", "pending").lt("due_date", today).limit(50),
-        supabase.from("no_next_step_leads").select("id, business_name").limit(50),
-      ]);
-
-      const list: Item[] = [];
-      type TaskRow = { id: string; title: string; due_date: string; leads: { id: string; business_name: string } | null };
-      for (const t of (overdue.data ?? []) as unknown as TaskRow[]) {
-        list.push({
-          key: `od-${t.id}`, icon: AlertTriangle, severity: "critical",
-          title: `Overdue: ${t.title}`,
-          body: `${t.leads?.business_name ?? "Lead"} — was due ${t.due_date}`,
-          href: t.leads ? `/leads/${t.leads.id}` : "/tasks",
-        });
-      }
-      for (const l of noNext.data ?? []) {
-        list.push({
-          key: `nn-${l.id}`, icon: AlertTriangle, severity: "warn",
-          title: "No next step",
-          body: `${l.business_name} has outreach history but no pending task`,
-          href: `/leads/${l.id}`,
-        });
-      }
-      for (const t of (due.data ?? []) as unknown as TaskRow[]) {
-        list.push({
-          key: `due-${t.id}`, icon: Clock, severity: "info",
-          title: `Due today: ${t.title}`,
-          body: t.leads?.business_name ?? "",
-          href: t.leads ? `/leads/${t.leads.id}` : "/tasks",
-        });
-      }
-      return list;
-    },
+    queryFn: () => fetchNotificationFeed(supabase),
   });
+
+  // Viewing the page marks everything as seen → sidebar badge clears.
+  useEffect(() => {
+    if (items?.length) markSeen(items.map((i) => i.key));
+  }, [items]);
 
   // outreach window reminder (client-side, in-app)
   const windowReminder = (() => {
@@ -113,25 +75,28 @@ export default function NotificationsPage() {
         </Card>
       ) : (
         <div className="space-y-2">
-          {items.map((n) => (
-            <Link key={n.key} href={n.href} className="block">
-              <Card className="transition-colors hover:bg-accent/50">
-                <CardContent className="flex items-center gap-3 py-3">
-                  <n.icon className="h-4 w-4 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{n.title}</p>
-                    {n.body && <p className="truncate text-xs text-muted-foreground">{n.body}</p>}
-                  </div>
-                  <Badge variant={badgeVariant[n.severity]}>{n.severity}</Badge>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
+          {items.map((n) => {
+            const Icon = SEVERITY_ICONS[n.severity];
+            return (
+              <Link key={n.key} href={n.href} className="block">
+                <Card className="transition-colors hover:bg-accent/50">
+                  <CardContent className="flex items-center gap-3 py-3">
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{n.title}</p>
+                      {n.body && <p className="truncate text-xs text-muted-foreground">{n.body}</p>}
+                    </div>
+                    <Badge variant={badgeVariant[n.severity]}>{n.severity}</Badge>
+                  </CardContent>
+                </Card>
+              </Link>
+            );
+          })}
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        Notifications are computed live from your tasks and leads. Push notifications arrive with the
-        mobile companion app.
+        These items stay listed until resolved (e.g. set a next task for a &ldquo;no next step&rdquo;
+        lead). The sidebar badge only counts ones you haven&rsquo;t viewed yet.
       </p>
     </div>
   );
