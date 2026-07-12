@@ -124,6 +124,8 @@ export default function LeadDetailPage({
     queryClient.invalidateQueries({ queryKey: ["campaigns"] });
     queryClient.invalidateQueries({ queryKey: ["analytics-activities"] });
     queryClient.invalidateQueries({ queryKey: ["analytics-campaigns"] });
+    queryClient.invalidateQueries({ queryKey: ["alert-count"] });
+    queryClient.invalidateQueries({ queryKey: ["notification-feed"] });
   }
 
   const doQuickLog = useMutation({

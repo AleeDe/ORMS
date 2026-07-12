@@ -288,7 +288,7 @@ function LeadsInner() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-bold tracking-tight">
           Leads{" "}
           <span className="text-base font-normal text-muted-foreground">
@@ -374,7 +374,7 @@ function LeadsInner() {
       </div>
 
       {selected.size > 0 && (
-        <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/50 px-3 py-2">
           <span className="text-sm font-medium">{selected.size} selected</span>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear

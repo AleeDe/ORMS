@@ -69,6 +69,8 @@ export default function TasksPage() {
       toast.success("Task completed");
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["no-next-step"] });
+      queryClient.invalidateQueries({ queryKey: ["alert-count"] });
+      queryClient.invalidateQueries({ queryKey: ["notification-feed"] });
     },
   });
 
@@ -81,6 +83,8 @@ export default function TasksPage() {
       toast.success("Task rescheduled");
       setRescheduling(null);
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["alert-count"] });
+      queryClient.invalidateQueries({ queryKey: ["notification-feed"] });
     },
   });
 
@@ -96,6 +100,7 @@ export default function TasksPage() {
     if (!list.length)
       return <p className="py-8 text-center text-sm text-muted-foreground">Nothing here. 🎉</p>;
     return (
+      <div className="overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow>
@@ -164,6 +169,7 @@ export default function TasksPage() {
           ))}
         </TableBody>
       </Table>
+      </div>
     );
   };
 
@@ -171,6 +177,7 @@ export default function TasksPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
       <Tabs defaultValue="today">
+        <div className="overflow-x-auto pb-1">
         <TabsList>
           <TabsTrigger value="today">Due Today ({views.today.length})</TabsTrigger>
           <TabsTrigger value="overdue" className={views.overdue.length ? "text-destructive" : ""}>
@@ -182,6 +189,7 @@ export default function TasksPage() {
             No Next Step ({noNextStep?.length ?? 0})
           </TabsTrigger>
         </TabsList>
+        </div>
         <TabsContent value="today">{taskTable(views.today)}</TabsContent>
         <TabsContent value="overdue">{taskTable(views.overdue)}</TabsContent>
         <TabsContent value="upcoming">{taskTable(views.upcoming)}</TabsContent>
@@ -198,6 +206,7 @@ export default function TasksPage() {
                 These leads have outreach history but no pending task — they are operationally lost.
                 Open each and set a next action.
               </p>
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -220,6 +229,7 @@ export default function TasksPage() {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </div>
           )}
         </TabsContent>

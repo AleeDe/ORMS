@@ -438,6 +438,7 @@ export default function ImportPage() {
               </Select>
             </div>
 
+            <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -484,6 +485,7 @@ export default function ImportPage() {
                 ))}
               </TableBody>
             </Table>
+            </div>
 
             <p className="text-xs text-muted-foreground">
               Email / website / phone are detected from each column&apos;s <em>values</em> (headers can
@@ -528,7 +530,7 @@ export default function ImportPage() {
                   <AlertTriangle className="h-4 w-4 text-destructive" /> Invalid rows (will be skipped)
                 </CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>

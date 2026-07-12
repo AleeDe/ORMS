@@ -322,7 +322,7 @@ export default function AnalyticsPage() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">Campaign Performance</CardTitle></CardHeader>
-        <CardContent>
+        <CardContent className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

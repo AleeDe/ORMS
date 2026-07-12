@@ -31,6 +31,8 @@ export default function NotificationsPage() {
 
   const { data: items } = useQuery({
     queryKey: ["notification-feed"],
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
     queryFn: async () => {
       const [due, overdue, noNext] = await Promise.all([
         supabase
