@@ -40,6 +40,7 @@ type ParsedLead = {
   _row: number;
   _issues: string[];
   _dupOf?: string;
+  _dupInFile?: number;
   name: string;
   email: string;
   website: string;
@@ -88,7 +89,7 @@ export default function ImportPage() {
   const [configs, setConfigs] = useState<ColumnConfig[]>([]);
   const [nameColumn, setNameColumn] = useState("");
   const [parsed, setParsed] = useState<ParsedLead[]>([]);
-  const [dupMode, setDupMode] = useState<DupMode>("skip");
+  const [dupMode, setDupMode] = useState<DupMode>("import");
   const [datasetId, setDatasetId] = useState("");
   const [newDatasetName, setNewDatasetName] = useState("");
   const [importing, setImporting] = useState(false);
@@ -213,7 +214,7 @@ export default function ImportPage() {
         normalizePhone(l.phone) && `p:${normalizePhone(l.phone)}`,
       ].filter(Boolean) as string[];
       const dupKey = keys.find((k) => seen.has(k));
-      if (dupKey) l._issues.push(`duplicate of row ${seen.get(dupKey)} in file`);
+      if (dupKey) l._dupInFile = seen.get(dupKey);
       else keys.forEach((k) => seen.set(k, l._row));
     }
 
@@ -263,8 +264,8 @@ export default function ImportPage() {
 
   const stats = useMemo(() => {
     const invalid = parsed.filter((l) => l._issues.length > 0);
-    const dups = parsed.filter((l) => l._dupOf && !l._issues.length);
-    const clean = parsed.filter((l) => !l._issues.length && !l._dupOf);
+    const dups = parsed.filter((l) => !l._issues.length && (l._dupOf || l._dupInFile));
+    const clean = parsed.filter((l) => !l._issues.length && !l._dupOf && !l._dupInFile);
     return { invalid, dups, clean };
   }, [parsed]);
 
@@ -301,7 +302,7 @@ export default function ImportPage() {
       });
 
       if (dupMode === "update") {
-        for (const l of stats.dups) {
+        for (const l of stats.dups.filter((d) => d._dupOf)) {
           const { error } = await supabase
             .from("leads").update(toLeadRow(l)).eq("id", l._dupOf!);
           if (error) failed++;
@@ -310,7 +311,11 @@ export default function ImportPage() {
       }
 
       const toInsert =
-        dupMode === "import" ? [...stats.clean, ...stats.dups] : stats.clean;
+        dupMode === "import"
+          ? [...stats.clean, ...stats.dups]
+          : dupMode === "update"
+            ? [...stats.clean, ...stats.dups.filter((d) => !d._dupOf)]
+            : stats.clean;
 
       const CHUNK = 250;
       for (let i = 0; i < toInsert.length; i += CHUNK) {
@@ -511,7 +516,7 @@ export default function ImportPage() {
             </Card>
             <Card>
               <CardContent className="pt-4">
-                <p className="text-sm text-muted-foreground">Duplicates (existing leads)</p>
+                <p className="text-sm text-muted-foreground">Possible duplicates</p>
                 <p className="text-2xl font-bold text-amber-600">{stats.dups.length}</p>
               </CardContent>
             </Card>
@@ -565,18 +570,21 @@ export default function ImportPage() {
           {stats.dups.length > 0 && (
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">Duplicate handling</CardTitle>
+                <CardTitle className="text-base">Duplicate handling (optional)</CardTitle>
                 <CardDescription>
-                  {stats.dups.length} rows match existing leads (by website, email, phone, or name).
+                  {stats.dups.length} rows look like duplicates (matching website, email, phone,
+                  or name — in this file or against existing leads). Nothing is removed
+                  automatically — by default everything is imported. Choose skip/update only if
+                  you want deduplication.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <Select value={dupMode} onValueChange={(v) => setDupMode(v as DupMode)}>
                   <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="import">Import all (no dedupe)</SelectItem>
                     <SelectItem value="skip">Skip duplicates</SelectItem>
                     <SelectItem value="update">Update existing leads</SelectItem>
-                    <SelectItem value="import">Import anyway (create new)</SelectItem>
                   </SelectContent>
                 </Select>
               </CardContent>
@@ -618,8 +626,14 @@ export default function ImportPage() {
               </div>
             )}
             <p className="text-sm text-muted-foreground">
-              Importing {stats.clean.length + (dupMode === "import" ? stats.dups.length : 0)} leads
-              {dupMode === "update" && `, updating ${stats.dups.length}`}
+              Importing{" "}
+              {dupMode === "import"
+                ? stats.clean.length + stats.dups.length
+                : dupMode === "update"
+                  ? stats.clean.length + stats.dups.filter((d) => !d._dupOf).length
+                  : stats.clean.length}{" "}
+              leads
+              {dupMode === "update" && `, updating ${stats.dups.filter((d) => d._dupOf).length}`}
               {dupMode === "skip" && stats.dups.length > 0 && `, skipping ${stats.dups.length} duplicates`}
               . Invalid rows are skipped.
             </p>

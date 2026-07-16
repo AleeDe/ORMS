@@ -22,8 +22,9 @@ import {
 import { toast } from "sonner";
 import {
   Mail, Reply, Phone, PhoneCall, CalendarCheck, StickyNote, Send,
-  CheckCircle2, Clock, ExternalLink,
+  CheckCircle2, Clock, ExternalLink, Pencil, Plus, Trash2,
 } from "lucide-react";
+import { normalizeName, normalizePhone, normalizeWebsite } from "@/lib/normalize";
 
 const ACTIVITY_ICONS: Record<string, React.ElementType> = {
   EMAIL_SENT: Mail,
@@ -36,6 +37,7 @@ const ACTIVITY_ICONS: Record<string, React.ElementType> = {
   MEETING_COMPLETED: CheckCircle2,
   NOTE_ADDED: StickyNote,
   STATUS_CHANGED: Clock,
+  INFO_UPDATED: Pencil,
 };
 
 const ACTIVITY_LABELS: Record<string, string> = {
@@ -49,6 +51,17 @@ const ACTIVITY_LABELS: Record<string, string> = {
   MEETING_COMPLETED: "Meeting completed",
   NOTE_ADDED: "Note",
   STATUS_CHANGED: "Status changed",
+  INFO_UPDATED: "Info updated",
+};
+
+type EditForm = {
+  business_name: string;
+  website: string;
+  address: string;
+  city: string;
+  country: string;
+  emails: { id?: string; email: string; original?: string }[];
+  phones: { id?: string; phone: string; original?: string }[];
 };
 
 export default function LeadDetailPage({
@@ -65,6 +78,7 @@ export default function LeadDetailPage({
   const [noteContent, setNoteContent] = useState("");
   const [noteType, setNoteType] = useState("general");
   const [suggestion, setSuggestion] = useState<{ campaignId: string; to: string } | null>(null);
+  const [editForm, setEditForm] = useState<EditForm | null>(null);
 
   const { data: lead } = useQuery({
     queryKey: ["lead", id],
@@ -199,6 +213,94 @@ export default function LeadDetailPage({
     onError: (e) => toast.error(e.message),
   });
 
+  // Every field change is written to the activities timeline (INFO_UPDATED) —
+  // edits are allowed, but always logged.
+  const saveEdit = useMutation({
+    mutationFn: async (form: EditForm) => {
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData.user!.id;
+      const changes: string[] = [];
+
+      const fields: { key: keyof EditForm; label: string }[] = [
+        { key: "business_name", label: "Name" },
+        { key: "website", label: "Website" },
+        { key: "address", label: "Address" },
+        { key: "city", label: "City" },
+        { key: "country", label: "Country" },
+      ];
+      const patch: Record<string, string | null> = {};
+      for (const f of fields) {
+        const next = (form[f.key] as string).trim();
+        const prev = (lead[f.key] ?? "") as string;
+        if (next !== prev) {
+          patch[f.key] = next || null;
+          changes.push(`${f.label}: "${prev || "—"}" → "${next || "—"}"`);
+        }
+      }
+      if ("business_name" in patch) patch.name_norm = normalizeName(form.business_name);
+      if ("website" in patch) patch.website_norm = normalizeWebsite(form.website);
+      if (Object.keys(patch).length) {
+        const { error } = await supabase.from("leads").update(patch).eq("id", id);
+        if (error) throw error;
+      }
+
+      for (const e of form.emails) {
+        const val = e.email.trim().toLowerCase();
+        if (e.id && !val) {
+          const { error } = await supabase.from("lead_emails").delete().eq("id", e.id);
+          if (error) throw error;
+          changes.push(`Email removed: ${e.original}`);
+        } else if (e.id && val !== e.original) {
+          const { error } = await supabase.from("lead_emails").update({ email: val }).eq("id", e.id);
+          if (error) throw error;
+          changes.push(`Email: "${e.original}" → "${val}"`);
+        } else if (!e.id && val) {
+          const { error } = await supabase
+            .from("lead_emails")
+            .insert({ user_id: userId, lead_id: id, email: val });
+          if (error) throw error;
+          changes.push(`Email added: ${val}`);
+        }
+      }
+
+      for (const p of form.phones) {
+        const val = p.phone.trim();
+        if (p.id && !val) {
+          const { error } = await supabase.from("lead_phones").delete().eq("id", p.id);
+          if (error) throw error;
+          changes.push(`Phone removed: ${p.original}`);
+        } else if (p.id && val !== p.original) {
+          const { error } = await supabase
+            .from("lead_phones")
+            .update({ phone: val, phone_norm: normalizePhone(val) })
+            .eq("id", p.id);
+          if (error) throw error;
+          changes.push(`Phone: "${p.original}" → "${val}"`);
+        } else if (!p.id && val) {
+          const { error } = await supabase
+            .from("lead_phones")
+            .insert({ user_id: userId, lead_id: id, phone: val, phone_norm: normalizePhone(val) });
+          if (error) throw error;
+          changes.push(`Phone added: ${val}`);
+        }
+      }
+
+      if (changes.length) {
+        const { error } = await supabase.from("activities").insert({
+          user_id: userId, lead_id: id, type: "INFO_UPDATED", content: changes.join("\n"),
+        });
+        if (error) throw error;
+      }
+      return changes.length;
+    },
+    onSuccess: (count) => {
+      toast.success(count ? "Lead updated — changes logged in timeline" : "No changes");
+      setEditForm(null);
+      invalidateAll();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   const completeTask = useMutation({
     mutationFn: async (taskId: string) => {
       const { error } = await supabase
@@ -262,7 +364,141 @@ export default function LeadDetailPage({
         {/* Left: info */}
         <div className="space-y-4">
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">Lead Info</CardTitle></CardHeader>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Lead Info</CardTitle>
+                {!editForm && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    onClick={() =>
+                      setEditForm({
+                        business_name: lead.business_name ?? "",
+                        website: lead.website ?? "",
+                        address: lead.address ?? "",
+                        city: lead.city ?? "",
+                        country: lead.country ?? "",
+                        emails: (lead.lead_emails ?? []).map((e: { id: string; email: string }) => ({
+                          id: e.id, email: e.email, original: e.email,
+                        })),
+                        phones: (lead.lead_phones ?? []).map((p: { id: string; phone: string }) => ({
+                          id: p.id, phone: p.phone, original: p.phone,
+                        })),
+                      })
+                    }
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    <span className="ml-1 text-xs">Edit</span>
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            {editForm ? (
+              <CardContent className="space-y-3 text-sm">
+                {([
+                  ["business_name", "Name"],
+                  ["website", "Website"],
+                  ["address", "Address"],
+                  ["city", "City"],
+                  ["country", "Country"],
+                ] as const).map(([key, label]) => (
+                  <div key={key} className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">{label}</p>
+                    <Input
+                      className="h-8"
+                      value={editForm[key]}
+                      onChange={(e) => setEditForm({ ...editForm, [key]: e.target.value })}
+                    />
+                  </div>
+                ))}
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Emails</p>
+                  {editForm.emails.map((e, i) => (
+                    <div key={e.id ?? `new-${i}`} className="flex gap-1">
+                      <Input
+                        className="h-8"
+                        value={e.email}
+                        onChange={(ev) => {
+                          const emails = [...editForm.emails];
+                          emails[i] = { ...emails[i], email: ev.target.value };
+                          setEditForm({ ...editForm, emails });
+                        }}
+                      />
+                      <Button
+                        size="sm" variant="ghost" className="h-8 px-2"
+                        onClick={() => {
+                          const emails = [...editForm.emails];
+                          if (emails[i].id) emails[i] = { ...emails[i], email: "" };
+                          else emails.splice(i, 1);
+                          setEditForm({ ...editForm, emails });
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    size="sm" variant="outline" className="h-7"
+                    onClick={() =>
+                      setEditForm({ ...editForm, emails: [...editForm.emails, { email: "" }] })
+                    }
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> Add email
+                  </Button>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Phones</p>
+                  {editForm.phones.map((p, i) => (
+                    <div key={p.id ?? `new-${i}`} className="flex gap-1">
+                      <Input
+                        className="h-8"
+                        value={p.phone}
+                        onChange={(ev) => {
+                          const phones = [...editForm.phones];
+                          phones[i] = { ...phones[i], phone: ev.target.value };
+                          setEditForm({ ...editForm, phones });
+                        }}
+                      />
+                      <Button
+                        size="sm" variant="ghost" className="h-8 px-2"
+                        onClick={() => {
+                          const phones = [...editForm.phones];
+                          if (phones[i].id) phones[i] = { ...phones[i], phone: "" };
+                          else phones.splice(i, 1);
+                          setEditForm({ ...editForm, phones });
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    size="sm" variant="outline" className="h-7"
+                    onClick={() =>
+                      setEditForm({ ...editForm, phones: [...editForm.phones, { phone: "" }] })
+                    }
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> Add phone
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  All changes are logged in the relationship timeline.
+                </p>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button size="sm" variant="outline" onClick={() => setEditForm(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={saveEdit.isPending || !editForm.business_name.trim()}
+                    onClick={() => saveEdit.mutate(editForm)}
+                  >
+                    {saveEdit.isPending ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+              </CardContent>
+            ) : (
             <CardContent className="space-y-2 text-sm">
               {lead.website && (
                 <p>
@@ -319,6 +555,7 @@ export default function LeadDetailPage({
                 </div>
               )}
             </CardContent>
+            )}
           </Card>
 
           <Card>
@@ -503,7 +740,7 @@ export default function LeadDetailPage({
                             )}
                           </p>
                           {a.content && (
-                            <p className="text-sm text-muted-foreground">{a.content}</p>
+                            <p className="whitespace-pre-line text-sm text-muted-foreground">{a.content}</p>
                           )}
                           <p className="text-xs text-muted-foreground">
                             {new Date(a.occurred_at).toLocaleString()}
