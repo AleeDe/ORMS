@@ -20,9 +20,10 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Columns3 } from "lucide-react";
 
 const PAGE_SIZE = 50;
+const COL_PREFS_KEY = "leads.hiddenColumns";
 
 type LeadRow = {
   id: string;
@@ -50,7 +51,17 @@ function LeadsInner() {
   const [tagInput, setTagInput] = useState("");
   const [targetCampaign, setTargetCampaign] = useState("");
   const [fieldsDialog, setFieldsDialog] = useState(false);
+  const [columnsDialog, setColumnsDialog] = useState(false);
   const [fieldRenames, setFieldRenames] = useState<Record<string, string>>({});
+  // Per-dataset column choice; a missing entry = auto (show only fields with values)
+  const [colPrefs, setColPrefs] = useState<Record<string, string[]>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      return JSON.parse(localStorage.getItem(COL_PREFS_KEY) ?? "{}") as Record<string, string[]>;
+    } catch {
+      return {};
+    }
+  });
   // advanced filters
   const [emailFilter, setEmailFilter] = useState("any"); // any | valid | invalid | has | none
   const [websiteFilter, setWebsiteFilter] = useState("any"); // any | has | none
@@ -58,6 +69,25 @@ function LeadsInner() {
   const [fieldKey, setFieldKey] = useState("any");
   const [fieldValue, setFieldValue] = useState("");
   const [selectingAll, setSelectingAll] = useState(false);
+
+  // Column choice is remembered per dataset (each sheet has its own field set).
+  const prefKey = datasetFilter ?? "all";
+  const hiddenColumns: string[] | null = colPrefs[prefKey] ?? null;
+
+  function persistPrefs(next: Record<string, string[]>) {
+    setColPrefs(next);
+    localStorage.setItem(COL_PREFS_KEY, JSON.stringify(next));
+  }
+
+  function applyHiddenColumns(next: string[]) {
+    persistPrefs({ ...colPrefs, [prefKey]: next });
+  }
+
+  function resetColumns() {
+    const next = { ...colPrefs };
+    delete next[prefKey];
+    persistPrefs(next);
+  }
 
   const filters = {
     datasetFilter, search, sort, page,
@@ -143,13 +173,16 @@ function LeadsInner() {
     },
   });
 
+  // Columns come from the leads actually in view: with a dataset selected only that
+  // dataset's (i.e. that sheet's) fields, so unrelated imports don't add empty columns.
   const { data: customFieldKeys } = useQuery({
-    queryKey: ["custom-field-keys"],
+    queryKey: ["custom-field-keys", datasetFilter],
     queryFn: async () => {
       const keys = new Set<string>();
       for (let from = 0; ; from += 1000) {
-        const { data, error } = await supabase
-          .from("leads").select("custom_fields").range(from, from + 999);
+        let q = supabase.from("leads").select("custom_fields");
+        if (datasetFilter) q = q.eq("dataset_id", datasetFilter);
+        const { data, error } = await q.range(from, from + 999);
         if (error) throw error;
         for (const l of data) Object.keys(l.custom_fields ?? {}).forEach((k) => keys.add(k));
         if (data.length < 1000) break;
@@ -158,8 +191,7 @@ function LeadsInner() {
     },
   });
 
-  // Dynamic table columns: every custom field key across ALL leads
-  const dynamicColumns = customFieldKeys ?? [];
+  const allFieldKeys = useMemo(() => customFieldKeys ?? [], [customFieldKeys]);
 
   const renameField = useMutation({
     mutationFn: async ({ oldKey, newKey }: { oldKey: string; newKey: string }) => {
@@ -283,6 +315,20 @@ function LeadsInner() {
   const allOnPageSelected =
     !!data?.rows.length && data.rows.every((r) => selected.has(r.id));
 
+  // Columns shown by default: only fields that actually carry a value on the current
+  // page, so a lead set that never had "Category" doesn't get an all-"—" column.
+  const populatedKeys = useMemo(() => {
+    const rows = data?.rows ?? [];
+    return allFieldKeys.filter((k) =>
+      rows.some((r) => (r.custom_fields?.[k] ?? "").toString().trim() !== "")
+    );
+  }, [allFieldKeys, data?.rows]);
+
+  // User's explicit choice (per dataset) wins over the auto default.
+  const dynamicColumns = hiddenColumns
+    ? allFieldKeys.filter((k) => !hiddenColumns.includes(k))
+    : populatedKeys;
+
   const hasWebsite = (data?.rows ?? []).some((r) => r.website);
   const hasEmail = (data?.rows ?? []).some((r) => r.lead_emails?.length);
 
@@ -296,6 +342,9 @@ function LeadsInner() {
           </span>
         </h1>
         <div className="flex gap-2">
+          <Button variant="ghost" onClick={() => setColumnsDialog(true)}>
+            <Columns3 className="mr-1 h-4 w-4" /> Columns
+          </Button>
           <Button variant="ghost" onClick={() => setFieldsDialog(true)}>
             Manage Fields
           </Button>
@@ -509,6 +558,50 @@ function LeadsInner() {
           </Button>
         </div>
       </div>
+
+      <Dialog open={columnsDialog} onOpenChange={setColumnsDialog}>
+        <DialogContent className="max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Columns</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {hiddenColumns
+              ? "Showing the fields you picked."
+              : "Showing only fields that have values in these leads."}
+            {datasetFilter ? " Saved for this dataset." : " Saved for the all-leads view."}
+          </p>
+          <div className="space-y-2">
+            {allFieldKeys.length === 0 && (
+              <p className="text-sm text-muted-foreground">No custom fields yet.</p>
+            )}
+            {allFieldKeys.map((k) => (
+              <label key={k} className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={dynamicColumns.includes(k)}
+                  onCheckedChange={(v) =>
+                    applyHiddenColumns(
+                      v
+                        ? allFieldKeys.filter(
+                            (x) => x !== k && !dynamicColumns.includes(x)
+                          )
+                        : [...allFieldKeys.filter((x) => !dynamicColumns.includes(x)), k]
+                    )
+                  }
+                />
+                <span>{k}</span>
+                {!populatedKeys.includes(k) && (
+                  <span className="text-xs text-muted-foreground">(empty here)</span>
+                )}
+              </label>
+            ))}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={resetColumns}>Reset to auto</Button>
+            <Button variant="outline" onClick={() => applyHiddenColumns([])}>Show all</Button>
+            <Button onClick={() => setColumnsDialog(false)}>Done</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={fieldsDialog} onOpenChange={setFieldsDialog}>
         <DialogContent className="max-h-[80vh] overflow-y-auto">
