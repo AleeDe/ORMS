@@ -25,6 +25,10 @@ import {
   CheckCircle2, Clock, ExternalLink, Pencil, Plus, Trash2,
 } from "lucide-react";
 import { normalizeName, normalizePhone, normalizeWebsite } from "@/lib/normalize";
+import {
+  CHANNEL_LABELS, CHANNEL_ORDER, ROLE_OPTIONS, personLabel,
+  type ContactChannel, type Person,
+} from "@/lib/people";
 
 const ACTIVITY_ICONS: Record<string, React.ElementType> = {
   EMAIL_SENT: Mail,
@@ -76,6 +80,9 @@ export default function LeadDetailPage({
   const queryClient = useQueryClient();
 
   const [logNote, setLogNote] = useState("");
+  const [logChannel, setLogChannel] = useState<string>("");
+  const [logPerson, setLogPerson] = useState<string>("");
+  const [personForm, setPersonForm] = useState<Partial<Person> | null>(null);
   const [activeCampaign, setActiveCampaign] = useState<string>("");
   const [noteContent, setNoteContent] = useState("");
   const [noteType, setNoteType] = useState("general");
@@ -102,12 +109,28 @@ export default function LeadDetailPage({
     queryFn: async () => {
       const { data, error } = await supabase
         .from("activities")
-        .select("*, campaigns(name)")
+        .select("*, campaigns(name), decision_makers(name, role)")
         .eq("lead_id", id)
         .order("occurred_at", { ascending: false })
         .limit(200);
       if (error) throw error;
       return data;
+    },
+  });
+
+  // How many times this lead was touched through each channel
+  const { data: channelTouches } = useQuery({
+    queryKey: ["channel-touches", id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("lead_channel_touches")
+        .select("channel, person_id, touches, last_touch_at")
+        .eq("lead_id", id);
+      if (error) throw error;
+      return data as {
+        channel: ContactChannel; person_id: string | null;
+        touches: number; last_touch_at: string;
+      }[];
     },
   });
 
@@ -145,6 +168,7 @@ export default function LeadDetailPage({
     queryClient.invalidateQueries({ queryKey: ["analytics-campaigns"] });
     queryClient.invalidateQueries({ queryKey: ["alert-count"] });
     queryClient.invalidateQueries({ queryKey: ["notification-feed"] });
+    queryClient.invalidateQueries({ queryKey: ["channel-touches", id] });
   }
 
   const doQuickLog = useMutation({
@@ -155,6 +179,8 @@ export default function LeadDetailPage({
         action,
         note: logNote,
         followupDays: settings?.default_followup_days ?? 3,
+        channel: logChannel || null,
+        personId: logPerson || null,
       }),
     onSuccess: (res, action) => {
       toast.success(
@@ -338,6 +364,63 @@ export default function LeadDetailPage({
     onError: (e) => toast.error(e.message),
   });
 
+  // People attached to this lead — add / edit is logged like any other info change.
+  const savePerson = useMutation({
+    mutationFn: async (form: Partial<Person>) => {
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData.user!.id;
+      const row = {
+        name: (form.name ?? "").trim(),
+        role: form.role?.trim() || null,
+        email: form.email?.trim() || null,
+        phone: form.phone?.trim() || null,
+        personal_email: form.personal_email?.trim() || null,
+        personal_phone: form.personal_phone?.trim() || null,
+        linkedin_url: form.linkedin_url?.trim() || null,
+        notes: form.notes?.trim() || null,
+      };
+      if (form.id) {
+        const { error } = await supabase
+          .from("decision_makers").update(row).eq("id", form.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("decision_makers").insert({ ...row, user_id: userId, lead_id: id });
+        if (error) throw error;
+      }
+      const { error: actErr } = await supabase.from("activities").insert({
+        user_id: userId, lead_id: id, type: "INFO_UPDATED",
+        content: `${form.id ? "Person updated" : "Person added"} — ${row.name}${
+          row.role ? ` (${row.role})` : ""
+        }`,
+      });
+      if (actErr) throw actErr;
+    },
+    onSuccess: () => {
+      toast.success("Person saved — logged in timeline");
+      setPersonForm(null);
+      invalidateAll();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const deletePerson = useMutation({
+    mutationFn: async (p: Person) => {
+      const { data: userData } = await supabase.auth.getUser();
+      const { error } = await supabase.from("decision_makers").delete().eq("id", p.id);
+      if (error) throw error;
+      await supabase.from("activities").insert({
+        user_id: userData.user!.id, lead_id: id, type: "INFO_UPDATED",
+        content: `Person removed — ${p.name}${p.role ? ` (${p.role})` : ""}`,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Person removed — logged in timeline");
+      invalidateAll();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   const completeTask = useMutation({
     mutationFn: async (taskId: string) => {
       const { error } = await supabase
@@ -359,6 +442,7 @@ export default function LeadDetailPage({
     campaigns: { id: string; name: string };
   };
   const campaignLeads = (lead.campaign_leads ?? []) as CampaignLeadRow[];
+  const people = (lead.decision_makers ?? []) as Person[];
   // Campaign the quick-log status buttons act on: the selected one, or the only one.
   const statusTargetId =
     activeCampaign || (campaignLeads.length === 1 ? campaignLeads[0].campaigns.id : "");
@@ -632,12 +716,12 @@ export default function LeadDetailPage({
                   ))}
                 </div>
               )}
-              {lead.decision_makers?.length > 0 && (
+              {people.length > 0 && (
                 <div className="pt-2">
-                  <p className="font-medium">Decision Makers</p>
-                  {lead.decision_makers.map((d: { id: string; name: string; role: string | null }) => (
+                  <p className="font-medium">People</p>
+                  {people.map((d) => (
                     <p key={d.id} className="text-muted-foreground">
-                      {d.name}{d.role ? ` — ${d.role}` : ""}
+                      {personLabel(d)}
                     </p>
                   ))}
                 </div>
@@ -645,6 +729,166 @@ export default function LeadDetailPage({
             </CardContent>
             )}
           </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">People</CardTitle>
+                {!personForm && (
+                  <Button
+                    size="sm" variant="ghost" className="h-7 px-2"
+                    onClick={() => setPersonForm({ role: "Owner" })}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span className="ml-1 text-xs">Add person</span>
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {!people.length && !personForm && (
+                <p className="text-muted-foreground">
+                  No people yet — add the owner, manager, receptionist, or anyone else you deal with.
+                </p>
+              )}
+
+              {people.map((p) => (
+                <div key={p.id} className="space-y-0.5 rounded-md border p-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium">{p.name}</p>
+                      {p.role && <p className="text-xs text-muted-foreground">{p.role}</p>}
+                    </div>
+                    <div className="flex shrink-0">
+                      <Button
+                        size="sm" variant="ghost" className="h-7 px-2"
+                        onClick={() => setPersonForm(p)}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm" variant="ghost" className="h-7 px-2"
+                        disabled={deletePerson.isPending}
+                        onClick={() => deletePerson.mutate(p)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                  {p.personal_phone && (
+                    <p className="text-xs text-muted-foreground">📱 {p.personal_phone}</p>
+                  )}
+                  {p.phone && <p className="text-xs text-muted-foreground">☎ {p.phone}</p>}
+                  {p.personal_email && (
+                    <p className="truncate text-xs text-muted-foreground">✉ {p.personal_email}</p>
+                  )}
+                  {p.email && <p className="truncate text-xs text-muted-foreground">✉ {p.email}</p>}
+                  {p.linkedin_url && (
+                    <a
+                      href={p.linkedin_url.startsWith("http") ? p.linkedin_url : `https://${p.linkedin_url}`}
+                      target="_blank" rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      LinkedIn <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                  {p.notes && <p className="text-xs text-muted-foreground">{p.notes}</p>}
+                </div>
+              ))}
+
+              {personForm && (
+                <div className="space-y-2 rounded-md border p-2">
+                  <Input
+                    className="h-8" placeholder="Name"
+                    value={personForm.name ?? ""}
+                    onChange={(e) => setPersonForm({ ...personForm, name: e.target.value })}
+                  />
+                  <div className="space-y-1">
+                    <Select
+                      value={ROLE_OPTIONS.includes(personForm.role ?? "") ? personForm.role! : "Other"}
+                      onValueChange={(v) => setPersonForm({ ...personForm, role: v })}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Role / position" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ROLE_OPTIONS.map((r) => (
+                          <SelectItem key={r} value={r}>{r}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {!ROLE_OPTIONS.includes(personForm.role ?? "") && (
+                      <Input
+                        className="h-8" placeholder="Custom role / position"
+                        value={personForm.role === "Other" ? "" : personForm.role ?? ""}
+                        onChange={(e) => setPersonForm({ ...personForm, role: e.target.value })}
+                      />
+                    )}
+                  </div>
+                  <Input
+                    className="h-8" placeholder="Personal number"
+                    value={personForm.personal_phone ?? ""}
+                    onChange={(e) => setPersonForm({ ...personForm, personal_phone: e.target.value })}
+                  />
+                  <Input
+                    className="h-8" placeholder="Personal email"
+                    value={personForm.personal_email ?? ""}
+                    onChange={(e) => setPersonForm({ ...personForm, personal_email: e.target.value })}
+                  />
+                  <Input
+                    className="h-8" placeholder="LinkedIn URL"
+                    value={personForm.linkedin_url ?? ""}
+                    onChange={(e) => setPersonForm({ ...personForm, linkedin_url: e.target.value })}
+                  />
+                  <Input
+                    className="h-8" placeholder="Notes (optional)"
+                    value={personForm.notes ?? ""}
+                    onChange={(e) => setPersonForm({ ...personForm, notes: e.target.value })}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setPersonForm(null)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={savePerson.isPending || !(personForm.name ?? "").trim()}
+                      onClick={() => savePerson.mutate(personForm)}
+                    >
+                      {savePerson.isPending ? "Saving…" : "Save"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {!!channelTouches?.length && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Touches by channel</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1 text-sm">
+                {CHANNEL_ORDER.filter((ch) => channelTouches.some((t) => t.channel === ch)).map(
+                  (ch) => {
+                    const rows = channelTouches.filter((t) => t.channel === ch);
+                    const total = rows.reduce((s, r) => s + r.touches, 0);
+                    const last = rows
+                      .map((r) => r.last_touch_at)
+                      .sort()
+                      .at(-1)!;
+                    return (
+                      <div key={ch} className="flex items-baseline justify-between gap-2">
+                        <span>{CHANNEL_LABELS[ch]}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {total}× · last {new Date(last).toLocaleDateString()}
+                        </span>
+                      </div>
+                    );
+                  }
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">Campaigns</CardTitle></CardHeader>
@@ -723,6 +967,30 @@ export default function LeadDetailPage({
                   </SelectContent>
                 </Select>
               )}
+              <div className="flex flex-wrap gap-2">
+                <Select value={logChannel} onValueChange={setLogChannel}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue placeholder="Channel used…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CHANNEL_ORDER.map((ch) => (
+                      <SelectItem key={ch} value={ch}>{CHANNEL_LABELS[ch]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {people.length > 0 && (
+                  <Select value={logPerson} onValueChange={setLogPerson}>
+                    <SelectTrigger className="w-56">
+                      <SelectValue placeholder="Person contacted (optional)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {people.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{personLabel(p)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
               <Input
                 placeholder="Optional note for the event…"
                 value={logNote}
@@ -821,6 +1089,17 @@ export default function LeadDetailPage({
                         <div className="min-w-0">
                           <p className="text-sm font-medium">
                             {ACTIVITY_LABELS[a.type] ?? a.type}
+                            {a.channel && (
+                              <Badge variant="secondary" className="ml-2 text-xs font-normal">
+                                {CHANNEL_LABELS[a.channel as ContactChannel] ?? a.channel}
+                              </Badge>
+                            )}
+                            {a.decision_makers?.name && (
+                              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                with {a.decision_makers.name}
+                                {a.decision_makers.role ? ` (${a.decision_makers.role})` : ""}
+                              </span>
+                            )}
                             {a.campaigns?.name && (
                               <span className="ml-2 text-xs font-normal text-muted-foreground">
                                 {a.campaigns.name}

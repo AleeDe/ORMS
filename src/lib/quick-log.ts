@@ -68,6 +68,10 @@ export async function quickLog(
     action: QuickLogAction;
     note?: string;
     followupDays?: number;
+    /** How the lead was contacted — drives per-channel touch counts */
+    channel?: string | null;
+    /** Which person at the lead was contacted */
+    personId?: string | null;
   }
 ): Promise<{ taskCreated: string | null; statusSuggestion: string | null }> {
   const { data: userData } = await supabase.auth.getUser();
@@ -80,6 +84,8 @@ export async function quickLog(
     campaign_id: opts.campaignId,
     type: opts.action,
     content: opts.note || null,
+    channel: opts.channel || null,
+    person_id: opts.personId || null,
   });
   if (actErr) throw actErr;
 
