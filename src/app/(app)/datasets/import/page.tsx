@@ -7,7 +7,7 @@ import * as XLSX from "xlsx";
 import { useQuery } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import {
-  normalizeEmail, normalizeName, normalizePhone, normalizeWebsite, isValidEmailSyntax,
+  normalizeName, normalizePhone, normalizeWebsite, isValidEmailSyntax,
 } from "@/lib/normalize";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,7 +25,6 @@ import { toast } from "sonner";
 import { CheckCircle2, AlertTriangle } from "lucide-react";
 
 type RawRow = Record<string, string>;
-type DupMode = "skip" | "update" | "import";
 type ColumnRole = "email" | "website" | "phone" | null;
 
 type ColumnConfig = {
@@ -39,8 +38,6 @@ type ColumnConfig = {
 type ParsedLead = {
   _row: number;
   _issues: string[];
-  _dupOf?: string;
-  _dupInFile?: number;
   name: string;
   email: string;
   website: string;
@@ -89,13 +86,12 @@ export default function ImportPage() {
   const [configs, setConfigs] = useState<ColumnConfig[]>([]);
   const [nameColumn, setNameColumn] = useState("");
   const [parsed, setParsed] = useState<ParsedLead[]>([]);
-  const [dupMode, setDupMode] = useState<DupMode>("import");
   const [datasetId, setDatasetId] = useState("");
   const [newDatasetName, setNewDatasetName] = useState("");
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [summary, setSummary] = useState<{
-    imported: number; updated: number; skippedDup: number; invalid: number; failed: number;
+    imported: number; invalid: number; failed: number;
   } | null>(null);
 
   const { data: datasets } = useQuery({
@@ -174,8 +170,9 @@ export default function ImportPage() {
     return !!c && c.include;
   }, [configs, nameColumn]);
 
-  // Step 2 -> 3
-  async function runValidation() {
+  // Step 2 -> 3. No deduplication: every row is imported (only rows that can't
+  // form a valid lead — empty name / malformed email — are flagged).
+  function runValidation() {
     const emailCol = configs.find((c) => c.include && c.role === "email")?.original;
     const websiteCol = configs.find((c) => c.include && c.role === "website")?.original;
     const phoneCol = configs.find((c) => c.include && c.role === "phone")?.original;
@@ -204,69 +201,14 @@ export default function ImportPage() {
       return lead;
     });
 
-    // in-file duplicates
-    const seen = new Map<string, number>();
-    for (const l of leads) {
-      const keys = [
-        normalizeWebsite(l.website) && `w:${normalizeWebsite(l.website)}`,
-        normalizeEmail(l.email) && `e:${normalizeEmail(l.email)}`,
-        normalizeName(l.name) && `n:${normalizeName(l.name)}`,
-        normalizePhone(l.phone) && `p:${normalizePhone(l.phone)}`,
-      ].filter(Boolean) as string[];
-      const dupKey = keys.find((k) => seen.has(k));
-      if (dupKey) l._dupInFile = seen.get(dupKey);
-      else keys.forEach((k) => seen.set(k, l._row));
-    }
-
-    // DB duplicates
-    const existing = new Map<string, string>();
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await supabase
-        .from("leads").select("id, website_norm, name_norm").range(from, from + 999);
-      if (error) { toast.error(error.message); return; }
-      for (const l of data) {
-        if (l.website_norm) existing.set(`w:${l.website_norm}`, l.id);
-        if (l.name_norm) existing.set(`n:${l.name_norm}`, l.id);
-      }
-      if (data.length < 1000) break;
-    }
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await supabase
-        .from("lead_emails").select("lead_id, email").range(from, from + 999);
-      if (error) { toast.error(error.message); return; }
-      for (const e of data) existing.set(`e:${e.email.toLowerCase()}`, e.lead_id);
-      if (data.length < 1000) break;
-    }
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await supabase
-        .from("lead_phones").select("lead_id, phone_norm").range(from, from + 999);
-      if (error) { toast.error(error.message); return; }
-      for (const p of data) if (p.phone_norm) existing.set(`p:${p.phone_norm}`, p.lead_id);
-      if (data.length < 1000) break;
-    }
-
-    for (const l of leads) {
-      const w = normalizeWebsite(l.website);
-      const n = normalizeName(l.name);
-      const e = normalizeEmail(l.email);
-      const p = normalizePhone(l.phone);
-      l._dupOf =
-        (w && existing.get(`w:${w}`)) ||
-        (e && existing.get(`e:${e}`)) ||
-        (p && existing.get(`p:${p}`)) ||
-        (n && existing.get(`n:${n}`)) ||
-        undefined;
-    }
-
     setParsed(leads);
     setStep(3);
   }
 
   const stats = useMemo(() => {
     const invalid = parsed.filter((l) => l._issues.length > 0);
-    const dups = parsed.filter((l) => !l._issues.length && (l._dupOf || l._dupInFile));
-    const clean = parsed.filter((l) => !l._issues.length && !l._dupOf && !l._dupInFile);
-    return { invalid, dups, clean };
+    const clean = parsed.filter((l) => !l._issues.length);
+    return { invalid, clean };
   }, [parsed]);
 
   async function runImport() {
@@ -287,8 +229,7 @@ export default function ImportPage() {
         dsId = data.id;
       }
 
-      let imported = 0, updated = 0, failed = 0;
-      const skippedDup = dupMode === "skip" ? stats.dups.length : 0;
+      let imported = 0, failed = 0;
 
       const toLeadRow = (l: ParsedLead) => ({
         user_id: userId,
@@ -301,21 +242,7 @@ export default function ImportPage() {
         custom_fields: l.custom,
       });
 
-      if (dupMode === "update") {
-        for (const l of stats.dups.filter((d) => d._dupOf)) {
-          const { error } = await supabase
-            .from("leads").update(toLeadRow(l)).eq("id", l._dupOf!);
-          if (error) failed++;
-          else updated++;
-        }
-      }
-
-      const toInsert =
-        dupMode === "import"
-          ? [...stats.clean, ...stats.dups]
-          : dupMode === "update"
-            ? [...stats.clean, ...stats.dups.filter((d) => !d._dupOf)]
-            : stats.clean;
+      const toInsert = stats.clean;
 
       const CHUNK = 250;
       for (let i = 0; i < toInsert.length; i += CHUNK) {
@@ -346,7 +273,7 @@ export default function ImportPage() {
         setProgress(Math.round(((i + chunk.length) / Math.max(toInsert.length, 1)) * 100));
       }
 
-      setSummary({ imported, updated, skippedDup, invalid: stats.invalid.length, failed });
+      setSummary({ imported, invalid: stats.invalid.length, failed });
       setStep(5);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Import failed");
@@ -356,9 +283,9 @@ export default function ImportPage() {
   }
 
   const roleBadge: Record<string, string> = {
-    email: "email · dedupe",
-    website: "website · dedupe",
-    phone: "phone · dedupe",
+    email: "email",
+    website: "website",
+    phone: "phone",
   };
 
   return (
@@ -494,7 +421,8 @@ export default function ImportPage() {
 
             <p className="text-xs text-muted-foreground">
               Email / website / phone are detected from each column&apos;s <em>values</em> (headers can
-              be named anything) and are used for duplicate detection.
+              be named anything) so they&apos;re stored in the right place. No rows are ever merged or
+              removed — everything is imported.
             </p>
 
             <div className="flex justify-end gap-2 pt-2">
@@ -507,22 +435,16 @@ export default function ImportPage() {
 
       {step === 3 && (
         <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <Card>
               <CardContent className="pt-4">
-                <p className="text-sm text-muted-foreground">Clean rows</p>
+                <p className="text-sm text-muted-foreground">Rows to import</p>
                 <p className="text-2xl font-bold text-green-600">{stats.clean.length}</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="pt-4">
-                <p className="text-sm text-muted-foreground">Possible duplicates</p>
-                <p className="text-2xl font-bold text-amber-600">{stats.dups.length}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-4">
-                <p className="text-sm text-muted-foreground">Invalid rows</p>
+                <p className="text-sm text-muted-foreground">Invalid rows (skipped)</p>
                 <p className="text-2xl font-bold text-destructive">{stats.invalid.length}</p>
               </CardContent>
             </Card>
@@ -567,30 +489,6 @@ export default function ImportPage() {
             </Card>
           )}
 
-          {stats.dups.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Duplicate handling (optional)</CardTitle>
-                <CardDescription>
-                  {stats.dups.length} rows look like duplicates (matching website, email, phone,
-                  or name — in this file or against existing leads). Nothing is removed
-                  automatically — by default everything is imported. Choose skip/update only if
-                  you want deduplication.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Select value={dupMode} onValueChange={(v) => setDupMode(v as DupMode)}>
-                  <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="import">Import all (no dedupe)</SelectItem>
-                    <SelectItem value="skip">Skip duplicates</SelectItem>
-                    <SelectItem value="update">Update existing leads</SelectItem>
-                  </SelectContent>
-                </Select>
-              </CardContent>
-            </Card>
-          )}
-
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setStep(2)}>Back</Button>
             <Button onClick={() => setStep(4)}>Continue</Button>
@@ -626,16 +524,7 @@ export default function ImportPage() {
               </div>
             )}
             <p className="text-sm text-muted-foreground">
-              Importing{" "}
-              {dupMode === "import"
-                ? stats.clean.length + stats.dups.length
-                : dupMode === "update"
-                  ? stats.clean.length + stats.dups.filter((d) => !d._dupOf).length
-                  : stats.clean.length}{" "}
-              leads
-              {dupMode === "update" && `, updating ${stats.dups.filter((d) => d._dupOf).length}`}
-              {dupMode === "skip" && stats.dups.length > 0 && `, skipping ${stats.dups.length} duplicates`}
-              . Invalid rows are skipped.
+              Importing {stats.clean.length} leads. Invalid rows are skipped.
             </p>
             {importing && (
               <div className="h-2 w-full overflow-hidden rounded bg-muted">
@@ -665,8 +554,6 @@ export default function ImportPage() {
           <CardContent className="space-y-4">
             <ul className="space-y-1 text-sm">
               <li><strong>{summary.imported}</strong> leads imported</li>
-              <li><strong>{summary.updated}</strong> existing leads updated</li>
-              <li><strong>{summary.skippedDup}</strong> duplicates skipped</li>
               <li><strong>{summary.invalid}</strong> invalid rows skipped</li>
               <li><strong>{summary.failed}</strong> failed rows</li>
             </ul>

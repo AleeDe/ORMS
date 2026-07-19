@@ -62,6 +62,8 @@ type EditForm = {
   country: string;
   emails: { id?: string; email: string; original?: string }[];
   phones: { id?: string; phone: string; original?: string }[];
+  // custom_fields flattened to editable rows; `originalKey` absent = newly added field
+  custom: { key: string; value: string; originalKey?: string }[];
 };
 
 export default function LeadDetailPage({
@@ -285,6 +287,41 @@ export default function LeadDetailPage({
         }
       }
 
+      // Custom fields — rebuild the JSON object from the edited rows, diff against
+      // the current one so every add / rename / value change / removal is logged.
+      const prevCustom = (lead.custom_fields ?? {}) as Record<string, string>;
+      const nextCustom: Record<string, string> = {};
+      for (const row of form.custom) {
+        const key = row.key.trim();
+        const value = row.value.trim();
+        if (!key) continue; // dropped: blank key
+        nextCustom[key] = value;
+        if (!row.originalKey) {
+          changes.push(`Field added — ${key}: "${value || "—"}"`);
+        } else if (row.originalKey !== key) {
+          changes.push(`Field renamed: "${row.originalKey}" → "${key}"`);
+          if (value !== (prevCustom[row.originalKey] ?? "")) {
+            changes.push(`${key}: "${prevCustom[row.originalKey] ?? "—"}" → "${value || "—"}"`);
+          }
+        } else if (value !== (prevCustom[key] ?? "")) {
+          changes.push(`${key}: "${prevCustom[key] ?? "—"}" → "${value || "—"}"`);
+        }
+      }
+      // fields present before but no longer in the form (or blanked key) = removed
+      const keptOriginals = new Set(
+        form.custom.map((r) => r.originalKey).filter(Boolean) as string[]
+      );
+      for (const k of Object.keys(prevCustom)) {
+        if (!keptOriginals.has(k)) changes.push(`Field removed — ${k}`);
+      }
+      const customChanged =
+        JSON.stringify(prevCustom) !== JSON.stringify(nextCustom);
+      if (customChanged) {
+        const { error } = await supabase
+          .from("leads").update({ custom_fields: nextCustom }).eq("id", id);
+        if (error) throw error;
+      }
+
       if (changes.length) {
         const { error } = await supabase.from("activities").insert({
           user_id: userId, lead_id: id, type: "INFO_UPDATED", content: changes.join("\n"),
@@ -385,6 +422,9 @@ export default function LeadDetailPage({
                         phones: (lead.lead_phones ?? []).map((p: { id: string; phone: string }) => ({
                           id: p.id, phone: p.phone, original: p.phone,
                         })),
+                        custom: Object.entries(
+                          (lead.custom_fields ?? {}) as Record<string, string>
+                        ).map(([key, value]) => ({ key, value, originalKey: key })),
                       })
                     }
                   >
@@ -480,6 +520,54 @@ export default function LeadDetailPage({
                     }
                   >
                     <Plus className="mr-1 h-3 w-3" /> Add phone
+                  </Button>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Custom fields</p>
+                  {editForm.custom.map((f, i) => (
+                    <div key={f.originalKey ?? `new-${i}`} className="flex gap-1">
+                      <Input
+                        className="h-8 w-1/3"
+                        placeholder="Field"
+                        value={f.key}
+                        onChange={(ev) => {
+                          const custom = [...editForm.custom];
+                          custom[i] = { ...custom[i], key: ev.target.value };
+                          setEditForm({ ...editForm, custom });
+                        }}
+                      />
+                      <Input
+                        className="h-8 flex-1"
+                        placeholder="Value"
+                        value={f.value}
+                        onChange={(ev) => {
+                          const custom = [...editForm.custom];
+                          custom[i] = { ...custom[i], value: ev.target.value };
+                          setEditForm({ ...editForm, custom });
+                        }}
+                      />
+                      <Button
+                        size="sm" variant="ghost" className="h-8 px-2"
+                        onClick={() => {
+                          const custom = [...editForm.custom];
+                          custom.splice(i, 1);
+                          setEditForm({ ...editForm, custom });
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    size="sm" variant="outline" className="h-7"
+                    onClick={() =>
+                      setEditForm({
+                        ...editForm,
+                        custom: [...editForm.custom, { key: "", value: "" }],
+                      })
+                    }
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> Add field
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
