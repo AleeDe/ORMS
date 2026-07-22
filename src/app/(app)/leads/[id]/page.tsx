@@ -94,6 +94,8 @@ export default function LeadDetailPage({
   const [logPerson, setLogPerson] = useState<string>("");
   const [personForm, setPersonForm] = useState<Partial<Person> | null>(null);
   const [taskForm, setTaskForm] = useState<{ title: string; due_date: string } | null>(null);
+  // When set, the "Meeting Booked" panel is open and we log once a time is chosen.
+  const [meetingAt, setMeetingAt] = useState<string | null>(null);
   const [activeCampaign, setActiveCampaign] = useState<string>("");
   const [noteContent, setNoteContent] = useState("");
   const [noteType, setNoteType] = useState("general");
@@ -183,39 +185,39 @@ export default function LeadDetailPage({
   }
 
   const doQuickLog = useMutation({
-    mutationFn: async (action: QuickLogAction) =>
+    mutationFn: async (vars: { action: QuickLogAction; meetingAt?: string }) =>
       quickLog(supabase, {
         leadId: id,
         campaignId: activeCampaign || null,
-        action,
+        action: vars.action,
         note: logNote,
         followupDays: settings?.default_followup_days ?? 3,
         channel: logChannel || null,
         personId: logPerson || null,
       }),
-    onSuccess: (res, action) => {
+    onSuccess: (res, vars) => {
+      const action = vars.action;
       toast.success(
         `${QUICK_LOG_LABELS[action]} logged${res.taskCreated ? ` — task: ${res.taskCreated}` : ""}`
       );
       if (res.statusSuggestion && activeCampaign) {
         setSuggestion({ campaignId: activeCampaign, to: res.statusSuggestion });
       }
-      // A booked meeting goes straight onto the user's Google Calendar (tomorrow
-      // 10am as a placeholder time they can move); silent if not connected.
-      if (action === "MEETING_BOOKED") {
-        const d = new Date();
-        d.setDate(d.getDate() + 1);
-        d.setHours(10, 0, 0, 0);
+      // A booked meeting goes straight onto the user's Google Calendar at the
+      // chosen time (silent if Google isn't connected).
+      if (action === "MEETING_BOOKED" && vars.meetingAt) {
+        const start = new Date(vars.meetingAt);
         autoCreateGoogleEvent({
           title: `Meeting — ${lead.business_name}`,
           description: logNote || `Meeting with ${lead.business_name}`,
-          start: d,
-          end: new Date(d.getTime() + 30 * 60 * 1000),
+          start,
+          end: new Date(start.getTime() + 30 * 60 * 1000),
         }).then((added) => {
           if (added) toast.success("Meeting added to Google Calendar");
         });
       }
       setLogNote("");
+      setMeetingAt(null);
       invalidateAll();
     },
     onError: (e) => toast.error(e.message),
@@ -1133,12 +1135,52 @@ export default function LeadDetailPage({
                     size="sm"
                     variant="outline"
                     disabled={doQuickLog.isPending}
-                    onClick={() => doQuickLog.mutate(a)}
+                    onClick={() => {
+                      // Meeting Booked asks for a time first (then logs + syncs to calendar).
+                      if (a === "MEETING_BOOKED") {
+                        const d = new Date();
+                        d.setDate(d.getDate() + 1);
+                        d.setHours(10, 0, 0, 0);
+                        d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+                        setMeetingAt(d.toISOString().slice(0, 16));
+                      } else {
+                        doQuickLog.mutate({ action: a });
+                      }
+                    }}
                   >
                     {QUICK_LOG_LABELS[a]}
                   </Button>
                 ))}
               </div>
+              {meetingAt !== null && (
+                <div className="flex flex-wrap items-end gap-2 rounded-md border bg-muted/40 p-3">
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">Meeting date &amp; time</p>
+                    <Input
+                      type="datetime-local"
+                      className="h-9 w-56"
+                      value={meetingAt}
+                      onChange={(e) => setMeetingAt(e.target.value)}
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={doQuickLog.isPending || !meetingAt}
+                    onClick={() =>
+                      doQuickLog.mutate({ action: "MEETING_BOOKED", meetingAt: meetingAt! })
+                    }
+                  >
+                    Log meeting
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setMeetingAt(null)}>
+                    Cancel
+                  </Button>
+                  <p className="w-full text-xs text-muted-foreground">
+                    If Google Calendar is connected (Settings), this meeting is added to it
+                    automatically.
+                  </p>
+                </div>
+              )}
               {campaignLeads.length > 0 && (
                 <div className="space-y-1.5 border-t pt-3">
                   <p className="text-xs font-medium text-muted-foreground">

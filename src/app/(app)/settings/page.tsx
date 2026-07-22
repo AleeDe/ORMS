@@ -229,8 +229,9 @@ function GoogleCalendarCard() {
           <CalendarCheck className="h-4 w-4" /> Google Calendar
         </CardTitle>
         <CardDescription>
-          Connect your Google Calendar and booked meetings & new tasks are added to it
-          automatically.
+          Connect your Google Calendar and booked meetings &amp; new tasks are added to it
+          automatically. Not connected? You still get an “Add to calendar” button on tasks.{" "}
+          <a href="/help" className="text-primary hover:underline">Learn more</a>.
         </CardDescription>
       </CardHeader>
       <CardContent>

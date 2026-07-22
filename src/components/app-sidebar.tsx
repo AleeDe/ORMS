@@ -25,6 +25,7 @@ import {
   BarChart3,
   Bell,
   Settings,
+  HelpCircle,
   LogOut,
   Menu,
   PanelLeftClose,
@@ -41,6 +42,7 @@ const nav = [
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/help", label: "Guide", icon: HelpCircle },
 ];
 
 // Unseen notifications: feed items whose keys the user hasn't viewed on the
