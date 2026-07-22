@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import { STATUS_LABELS, STATUS_ORDER } from "@/lib/quick-log";
+import { statusClass } from "@/lib/badge-styles";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -197,7 +198,10 @@ export default function CampaignDetailPage({
               filtered.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="font-medium">
-                    <Link href={`/leads/${r.leads.id}`} className="hover:underline">
+                    <Link
+                      href={`/leads/${r.leads.id}?from=campaign:${id}`}
+                      className="hover:underline"
+                    >
                       {r.leads.business_name}
                     </Link>
                   </TableCell>
@@ -208,7 +212,9 @@ export default function CampaignDetailPage({
                         updateStatus.mutate({ clId: r.id, leadId: r.leads.id, to: v })
                       }
                     >
-                      <SelectTrigger className="h-7 w-44 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className={`h-7 w-44 border-0 text-xs font-medium ${statusClass(r.status)}`}>
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         {STATUS_ORDER.map((s) => (
                           <SelectItem key={s} value={s}>{STATUS_LABELS[s]}</SelectItem>

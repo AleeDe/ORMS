@@ -2,6 +2,8 @@
 
 import { use, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -25,6 +27,8 @@ import {
   CheckCircle2, Clock, ExternalLink, Pencil, Plus, Trash2,
 } from "lucide-react";
 import { normalizeName, normalizePhone, normalizeWebsite } from "@/lib/normalize";
+import { AddToCalendar } from "@/components/add-to-calendar";
+import { activityClass, dueTone, statusClass, toneClass } from "@/lib/badge-styles";
 import {
   CHANNEL_LABELS, CHANNEL_ORDER, ROLE_OPTIONS, personLabel,
   type ContactChannel, type Person,
@@ -76,6 +80,11 @@ export default function LeadDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const searchParams = useSearchParams();
+  // When we arrived from a campaign, offer a one-click way back so the user
+  // stays in their campaign workflow instead of landing on the full leads list.
+  const fromParam = searchParams.get("from");
+  const fromCampaign = fromParam?.startsWith("campaign:") ? fromParam.slice(9) : null;
   const supabase = createClient();
   const queryClient = useQueryClient();
 
@@ -83,6 +92,7 @@ export default function LeadDetailPage({
   const [logChannel, setLogChannel] = useState<string>("");
   const [logPerson, setLogPerson] = useState<string>("");
   const [personForm, setPersonForm] = useState<Partial<Person> | null>(null);
+  const [taskForm, setTaskForm] = useState<{ title: string; due_date: string } | null>(null);
   const [activeCampaign, setActiveCampaign] = useState<string>("");
   const [noteContent, setNoteContent] = useState("");
   const [noteType, setNoteType] = useState("general");
@@ -421,6 +431,27 @@ export default function LeadDetailPage({
     onError: (e) => toast.error(e.message),
   });
 
+  const addTask = useMutation({
+    mutationFn: async (form: { title: string; due_date: string }) => {
+      const { data: userData } = await supabase.auth.getUser();
+      const { error } = await supabase.from("tasks").insert({
+        user_id: userData.user!.id,
+        lead_id: id,
+        campaign_id: activeCampaign || null,
+        type: "general_reminder",
+        title: form.title.trim(),
+        due_date: form.due_date,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Task added");
+      setTaskForm(null);
+      invalidateAll();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   const completeTask = useMutation({
     mutationFn: async (taskId: string) => {
       const { error } = await supabase
@@ -434,6 +465,8 @@ export default function LeadDetailPage({
       invalidateAll();
     },
   });
+
+  const dueClass = (dueDate: string) => toneClass(dueTone(dueDate, todayStr()));
 
   if (!lead) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
@@ -454,6 +487,14 @@ export default function LeadDetailPage({
 
   return (
     <div className="space-y-6">
+      {fromCampaign && (
+        <Link
+          href={`/campaigns/${fromCampaign}`}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> Back to campaign
+        </Link>
+      )}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{lead.business_name}</h1>
@@ -918,6 +959,7 @@ export default function LeadDetailPage({
                         ))}
                       </SelectContent>
                     </Select>
+                    <Badge className={statusClass(cl.status)}>{STATUS_LABELS[cl.status]}</Badge>
                     <span className="text-xs text-muted-foreground">{cl.touch_count} touches</span>
                   </div>
                 </div>
@@ -926,20 +968,85 @@ export default function LeadDetailPage({
           </Card>
 
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">Tasks</CardTitle></CardHeader>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Tasks</CardTitle>
+                {!taskForm && (
+                  <Button
+                    size="sm" variant="ghost" className="h-7 px-2"
+                    onClick={() =>
+                      setTaskForm({ title: "", due_date: todayStr() })
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span className="ml-1 text-xs">Add task</span>
+                  </Button>
+                )}
+              </div>
+            </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              {!pendingTasks.length && <p className="text-muted-foreground">No pending tasks.</p>}
+              {taskForm && (
+                <div className="space-y-2 rounded-md border p-2">
+                  <Input
+                    className="h-8"
+                    placeholder="What to do…"
+                    value={taskForm.title}
+                    onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })}
+                  />
+                  <Input
+                    type="date"
+                    className="h-8"
+                    value={taskForm.due_date}
+                    onChange={(e) => setTaskForm({ ...taskForm, due_date: e.target.value })}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setTaskForm(null)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={addTask.isPending || !taskForm.title.trim() || !taskForm.due_date}
+                      onClick={() => addTask.mutate(taskForm)}
+                    >
+                      {addTask.isPending ? "Adding…" : "Add"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {!pendingTasks.length && !taskForm && (
+                <p className="text-muted-foreground">No pending tasks.</p>
+              )}
               {pendingTasks.map((t) => (
                 <div key={t.id} className="flex items-center justify-between gap-2">
                   <div>
-                    <p className={t.due_date < todayStr() ? "font-medium text-destructive" : "font-medium"}>
-                      {t.title}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{t.title}</p>
+                      <Badge className={dueClass(t.due_date)}>
+                        {t.due_date < todayStr()
+                          ? "overdue"
+                          : t.due_date === todayStr()
+                            ? "today"
+                            : "upcoming"}
+                      </Badge>
+                    </div>
                     <p className="text-xs text-muted-foreground">Due {t.due_date}</p>
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => completeTask.mutate(t.id)}>
-                    Done
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <AddToCalendar
+                      variant="ghost"
+                      label=""
+                      event={{
+                        title: `${t.title} — ${lead.business_name}`,
+                        description: `ORMS task for ${lead.business_name}`,
+                        start: new Date(`${t.due_date}T09:00:00`),
+                        allDay: false,
+                      }}
+                      fileName={`task-${t.id}.ics`}
+                    />
+                    <Button size="sm" variant="outline" onClick={() => completeTask.mutate(t.id)}>
+                      Done
+                    </Button>
+                  </div>
                 </div>
               ))}
             </CardContent>
@@ -1083,7 +1190,7 @@ export default function LeadDetailPage({
                     const Icon = ACTIVITY_ICONS[a.type] ?? Clock;
                     return (
                       <div key={a.id} className="flex gap-3">
-                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted">
+                        <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${activityClass(a.type)}`}>
                           <Icon className="h-3.5 w-3.5" />
                         </div>
                         <div className="min-w-0">

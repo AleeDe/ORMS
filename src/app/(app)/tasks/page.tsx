@@ -12,8 +12,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Plus } from "lucide-react";
+import { AddToCalendar } from "@/components/add-to-calendar";
+import { dueTone, priorityClass, toneClass } from "@/lib/badge-styles";
 
 type Task = {
   id: string;
@@ -32,6 +37,8 @@ export default function TasksPage() {
   const today = todayStr();
   const [rescheduling, setRescheduling] = useState<string | null>(null);
   const [newDate, setNewDate] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addForm, setAddForm] = useState({ title: "", due_date: today, lead_id: "" });
 
   const { data: tasks } = useQuery({
     queryKey: ["tasks"],
@@ -55,6 +62,41 @@ export default function TasksPage() {
       if (error) throw error;
       return data;
     },
+  });
+
+  // Lightweight lead list for the "add task" lead picker (searchable via typing).
+  const [leadSearch, setLeadSearch] = useState("");
+  const { data: leadOptions } = useQuery({
+    queryKey: ["task-lead-options", leadSearch],
+    queryFn: async () => {
+      let q = supabase.from("leads").select("id, business_name").order("business_name").limit(20);
+      if (leadSearch.trim()) q = q.ilike("business_name", `%${leadSearch.trim()}%`);
+      const { data, error } = await q;
+      if (error) throw error;
+      return data as { id: string; business_name: string }[];
+    },
+  });
+
+  const addTask = useMutation({
+    mutationFn: async (form: { title: string; due_date: string; lead_id: string }) => {
+      const { data: userData } = await supabase.auth.getUser();
+      const { error } = await supabase.from("tasks").insert({
+        user_id: userData.user!.id,
+        lead_id: form.lead_id || null,
+        type: "general_reminder",
+        title: form.title.trim(),
+        due_date: form.due_date,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Task added");
+      setAdding(false);
+      setAddForm({ title: "", due_date: today, lead_id: "" });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["alert-count"] });
+    },
+    onError: (e) => toast.error(e.message),
   });
 
   const completeTask = useMutation({
@@ -126,17 +168,30 @@ export default function TasksPage() {
               <TableCell className="text-sm text-muted-foreground">
                 {t.campaigns?.name ?? "—"}
               </TableCell>
-              <TableCell className={t.due_date < today && t.status === "pending" ? "text-destructive" : ""}>
-                {t.due_date}
+              <TableCell>
+                <Badge className={toneClass(dueTone(t.due_date, today, t.status === "completed"))}>
+                  {t.due_date}
+                </Badge>
               </TableCell>
               <TableCell>
-                <Badge variant={t.priority === "high" ? "destructive" : "secondary"}>
+                <Badge className={priorityClass(t.priority)}>
                   {t.priority}
                 </Badge>
               </TableCell>
               <TableCell className="text-right">
                 {showComplete && (
                   <div className="flex justify-end gap-2">
+                    <AddToCalendar
+                      variant="ghost"
+                      label=""
+                      event={{
+                        title: t.leads ? `${t.title} — ${t.leads.business_name}` : t.title,
+                        description: "ORMS task",
+                        start: new Date(`${t.due_date}T09:00:00`),
+                        allDay: false,
+                      }}
+                      fileName={`task-${t.id}.ics`}
+                    />
                     {rescheduling === t.id ? (
                       <>
                         <Input
@@ -175,7 +230,61 @@ export default function TasksPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">Tasks</h1>
+        {!adding && (
+          <Button onClick={() => setAdding(true)}>
+            <Plus className="mr-1 h-4 w-4" /> Add task
+          </Button>
+        )}
+      </div>
+
+      {adding && (
+        <div className="space-y-3 rounded-md border p-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <Input
+              placeholder="What to do…"
+              value={addForm.title}
+              onChange={(e) => setAddForm({ ...addForm, title: e.target.value })}
+            />
+            <Input
+              type="date"
+              value={addForm.due_date}
+              onChange={(e) => setAddForm({ ...addForm, due_date: e.target.value })}
+            />
+            <Select
+              value={addForm.lead_id || "none"}
+              onValueChange={(v) => setAddForm({ ...addForm, lead_id: v === "none" ? "" : v })}
+            >
+              <SelectTrigger><SelectValue placeholder="Link a lead (optional)" /></SelectTrigger>
+              <SelectContent>
+                <div className="p-1">
+                  <Input
+                    placeholder="Search lead…"
+                    className="h-8"
+                    value={leadSearch}
+                    onChange={(e) => setLeadSearch(e.target.value)}
+                  />
+                </div>
+                <SelectItem value="none">No lead</SelectItem>
+                {leadOptions?.map((l) => (
+                  <SelectItem key={l.id} value={l.id}>{l.business_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setAdding(false)}>Cancel</Button>
+            <Button
+              disabled={addTask.isPending || !addForm.title.trim() || !addForm.due_date}
+              onClick={() => addTask.mutate(addForm)}
+            >
+              {addTask.isPending ? "Adding…" : "Add task"}
+            </Button>
+          </div>
+        </div>
+      )}
+
       <Tabs defaultValue="today">
         <div className="overflow-x-auto pb-1">
         <TabsList>

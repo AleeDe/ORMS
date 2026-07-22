@@ -21,6 +21,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { ExternalLink, Columns3 } from "lucide-react";
+import { ROLE_OPTIONS } from "@/lib/people";
 
 const PAGE_SIZE = 50;
 const COL_PREFS_KEY = "leads.hiddenColumns";
@@ -43,8 +44,6 @@ function LeadsInner() {
   const datasetFilter = searchParams.get("dataset");
 
   const [page, setPage] = useState(0);
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("created_at.desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [campaignDialog, setCampaignDialog] = useState(false);
   const [tagDialog, setTagDialog] = useState(false);
@@ -62,13 +61,55 @@ function LeadsInner() {
       return {};
     }
   });
-  // advanced filters
-  const [emailFilter, setEmailFilter] = useState("any"); // any | valid | invalid | has | none
-  const [websiteFilter, setWebsiteFilter] = useState("any"); // any | has | none
-  const [campaignFilter, setCampaignFilter] = useState("any"); // any | none | <campaign id>
-  const [fieldKey, setFieldKey] = useState("any");
-  const [fieldValue, setFieldValue] = useState("");
+  // advanced filters — persisted per dataset in localStorage so they survive
+  // navigation/refresh and don't reset every time (esp. inside a campaign).
+  const fKey = `leads.filters.${datasetFilter ?? "all"}`;
   const [selectingAll, setSelectingAll] = useState(false);
+
+  type FilterState = {
+    search: string; sort: string; emailFilter: string; websiteFilter: string;
+    campaignFilter: string; phoneFilter: string; personFilter: string;
+    touchFrom: string; touchTo: string; fieldKey: string; fieldValue: string;
+  };
+  const DEFAULT_FILTERS: FilterState = {
+    search: "", sort: "created_at.desc", emailFilter: "any", websiteFilter: "any",
+    campaignFilter: "any", phoneFilter: "any", personFilter: "any",
+    touchFrom: "", touchTo: "", fieldKey: "any", fieldValue: "",
+  };
+  const loadFilters = (key: string): FilterState => {
+    if (typeof window === "undefined") return DEFAULT_FILTERS;
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? { ...DEFAULT_FILTERS, ...(JSON.parse(raw) as FilterState) } : DEFAULT_FILTERS;
+    } catch {
+      return DEFAULT_FILTERS;
+    }
+  };
+
+  const [ff, setFf] = useState<FilterState>(() => loadFilters(fKey));
+  // React pattern: store the key we loaded for in state; when the dataset (hence
+  // storage key) changes, reload that dataset's saved filters — no effect needed.
+  const [ffKey, setFfKey] = useState(fKey);
+  if (ffKey !== fKey) {
+    setFfKey(fKey);
+    setFf(loadFilters(fKey));
+    setPage(0);
+  }
+
+  const { search, sort, emailFilter, websiteFilter, campaignFilter,
+    phoneFilter, personFilter, touchFrom, touchTo, fieldKey, fieldValue } = ff;
+  const patchFilter = (p: Partial<FilterState>) => { setFf((f) => ({ ...f, ...p })); setPage(0); };
+  const setSearch = (v: string) => patchFilter({ search: v });
+  const setSort = (v: string) => setFf((f) => ({ ...f, sort: v }));
+  const setEmailFilter = (v: string) => patchFilter({ emailFilter: v });
+  const setWebsiteFilter = (v: string) => patchFilter({ websiteFilter: v });
+  const setCampaignFilter = (v: string) => patchFilter({ campaignFilter: v });
+  const setPhoneFilter = (v: string) => patchFilter({ phoneFilter: v });
+  const setPersonFilter = (v: string) => patchFilter({ personFilter: v });
+  const setTouchFrom = (v: string) => patchFilter({ touchFrom: v });
+  const setTouchTo = (v: string) => patchFilter({ touchTo: v });
+  const setFieldKey = (v: string) => patchFilter({ fieldKey: v });
+  const setFieldValue = (v: string) => patchFilter({ fieldValue: v });
 
   // Column choice is remembered per dataset (each sheet has its own field set).
   const prefKey = datasetFilter ?? "all";
@@ -89,10 +130,40 @@ function LeadsInner() {
     persistPrefs(next);
   }
 
+  const filterState: FilterState = ff;
+
+  // Persist filters for this dataset on every change.
+  if (typeof window !== "undefined") {
+    localStorage.setItem(fKey, JSON.stringify(ff));
+  }
+
+  function clearFilters() {
+    setFf(DEFAULT_FILTERS);
+    setPage(0);
+  }
+
+  const activeFilterCount = [
+    emailFilter, websiteFilter, campaignFilter, phoneFilter, personFilter,
+  ].filter((v) => v !== "any").length + (touchFrom || touchTo ? 1 : 0)
+    + (fieldKey !== "any" && fieldValue.trim() ? 1 : 0);
+
   const filters = {
-    datasetFilter, search, sort, page,
-    emailFilter, websiteFilter, campaignFilter, fieldKey, fieldValue,
+    datasetFilter, page, ...filterState,
   };
+
+  // Full-field search (name/phone/email/website/custom) via the search_leads RPC:
+  // resolve to matching ids, then AND with the other filters below.
+  const { data: searchIds } = useQuery({
+    queryKey: ["leads-search-ids", search, datasetFilter],
+    enabled: search.trim().length >= 2,
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("search_leads", {
+        p_query: search.trim(), p_limit: 500,
+      });
+      if (error) throw error;
+      return (data as { id: string }[]).map((r) => r.id);
+    },
+  });
 
   // Builds the filtered query; `forIds` selects only ids (used by "select all matching")
   function buildQuery(forIds = false) {
@@ -105,7 +176,23 @@ function LeadsInner() {
       embeds.push("clf:campaign_leads!inner(campaign_id)");
     if (campaignFilter === "none") embeds.push("clf:campaign_leads()");
 
-    const filterEmbeds = embeds.filter((e) => e.startsWith("emf") || e.startsWith("clf"));
+    if (phoneFilter === "has") embeds.push("phf:lead_phones!inner(id)");
+    if (phoneFilter === "none") embeds.push("phf:lead_phones()");
+
+    // Touch-date range + personal-number / person-role filters live on the
+    // lead_filter_facts view; embed it when any of them is active.
+    const needFacts =
+      phoneFilter === "personal" || personFilter !== "any" || !!touchFrom || !!touchTo;
+    if (needFacts) embeds.push("lff:lead_filter_facts!inner(lead_id)");
+
+    // Person role filter joins decision_makers by role.
+    if (personFilter !== "any" && personFilter !== "has")
+      embeds.push("dmf:decision_makers!inner(role)");
+
+    const filterEmbeds = embeds.filter(
+      (e) => e.startsWith("emf") || e.startsWith("clf") || e.startsWith("lff")
+        || e.startsWith("dmf") || e.startsWith("phf")
+    );
     const base = forIds
       ? ["id", ...filterEmbeds].join(", ")
       : `id, business_name, website, tags, created_at, custom_fields, ${embeds.join(", ")}`;
@@ -113,7 +200,8 @@ function LeadsInner() {
     let q = supabase.from("leads").select(base, { count: "exact" });
 
     if (datasetFilter) q = q.eq("dataset_id", datasetFilter);
-    if (search.trim()) q = q.ilike("business_name", `%${search.trim()}%`);
+    // Full-field search: constrain to ids the RPC matched (empty => no results).
+    if (search.trim().length >= 2) q = q.in("id", searchIds ?? []);
     if (emailFilter === "valid") q = q.eq("emf.is_valid_syntax", true);
     if (emailFilter === "invalid") q = q.eq("emf.is_valid_syntax", false);
     if (emailFilter === "none") q = q.is("emf" as never, null);
@@ -122,13 +210,22 @@ function LeadsInner() {
     if (campaignFilter !== "any" && campaignFilter !== "none")
       q = q.eq("clf.campaign_id", campaignFilter);
     if (campaignFilter === "none") q = q.is("clf" as never, null);
+    // Phone: clinic/lead phones live on lead_phones; personal on the facts view.
+    if (phoneFilter === "none") q = q.is("phf" as never, null);
+    if (phoneFilter === "personal") q = q.eq("lff.has_personal_phone", true);
+    if (personFilter === "has") q = q.eq("lff.has_person", true);
+    if (personFilter !== "any" && personFilter !== "has") q = q.eq("dmf.role", personFilter);
+    if (touchFrom) q = q.gte("lff.first_touch_at", `${touchFrom}T00:00:00`);
+    if (touchTo) q = q.lte("lff.first_touch_at", `${touchTo}T23:59:59`);
     if (fieldKey !== "any" && fieldValue.trim())
       q = q.ilike(`custom_fields->>${fieldKey}`, `%${fieldValue.trim()}%`);
     return q;
   }
 
   const { data, isLoading } = useQuery({
-    queryKey: ["leads", filters],
+    queryKey: ["leads", filters, searchIds],
+    // Wait for search ids before querying so we don't flash all-leads then filter.
+    enabled: search.trim().length < 2 || Array.isArray(searchIds),
     queryFn: async () => {
       const [col, dir] = sort.split(".");
       const q = buildQuery()
@@ -356,8 +453,8 @@ function LeadsInner() {
 
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          placeholder="Search name…"
-          className="w-56"
+          placeholder="Search name, number, email, any field…"
+          className="w-72"
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(0); }}
         />
@@ -389,6 +486,25 @@ function LeadsInner() {
             ))}
           </SelectContent>
         </Select>
+        <Select value={phoneFilter} onValueChange={(v) => { setPhoneFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Phone: any</SelectItem>
+            <SelectItem value="has">Phone: has one</SelectItem>
+            <SelectItem value="none">Phone: missing</SelectItem>
+            <SelectItem value="personal">Has personal number</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={personFilter} onValueChange={(v) => { setPersonFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">People: any</SelectItem>
+            <SelectItem value="has">Has a person</SelectItem>
+            {ROLE_OPTIONS.map((r) => (
+              <SelectItem key={r} value={r}>Role: {r}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Select value={fieldKey} onValueChange={(v) => { setFieldKey(v); setPage(0); }}>
           <SelectTrigger className="w-44"><SelectValue placeholder="Field…" /></SelectTrigger>
           <SelectContent>
@@ -406,8 +522,24 @@ function LeadsInner() {
             onChange={(e) => { setFieldValue(e.target.value); setPage(0); }}
           />
         )}
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-muted-foreground">First touch</span>
+          <Input
+            type="date"
+            className="h-9 w-36"
+            value={touchFrom}
+            onChange={(e) => { setTouchFrom(e.target.value); setPage(0); }}
+          />
+          <span className="text-xs text-muted-foreground">→</span>
+          <Input
+            type="date"
+            className="h-9 w-36"
+            value={touchTo}
+            onChange={(e) => { setTouchTo(e.target.value); setPage(0); }}
+          />
+        </div>
         <Select value={sort} onValueChange={setSort}>
-          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="created_at.desc">Newest first</SelectItem>
             <SelectItem value="created_at.asc">Oldest first</SelectItem>
@@ -415,6 +547,11 @@ function LeadsInner() {
             <SelectItem value="business_name.desc">Name Z–A</SelectItem>
           </SelectContent>
         </Select>
+        {activeFilterCount > 0 || search.trim() ? (
+          <Button size="sm" variant="ghost" onClick={clearFilters}>
+            Clear filters{activeFilterCount ? ` (${activeFilterCount})` : ""}
+          </Button>
+        ) : null}
         {(data?.count ?? 0) > 0 && (
           <Button size="sm" variant="secondary" onClick={selectAllMatching} disabled={selectingAll}>
             {selectingAll ? "Selecting…" : `Select all ${data?.count} matching`}
