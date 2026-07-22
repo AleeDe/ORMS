@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { normalizeName, normalizePhone, normalizeWebsite } from "@/lib/normalize";
 import { AddToCalendar } from "@/components/add-to-calendar";
+import { autoCreateGoogleEvent } from "@/lib/calendar";
 import { activityClass, dueTone, statusClass, toneClass } from "@/lib/badge-styles";
 import {
   CHANNEL_LABELS, CHANNEL_ORDER, ROLE_OPTIONS, personLabel,
@@ -198,6 +199,21 @@ export default function LeadDetailPage({
       );
       if (res.statusSuggestion && activeCampaign) {
         setSuggestion({ campaignId: activeCampaign, to: res.statusSuggestion });
+      }
+      // A booked meeting goes straight onto the user's Google Calendar (tomorrow
+      // 10am as a placeholder time they can move); silent if not connected.
+      if (action === "MEETING_BOOKED") {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        d.setHours(10, 0, 0, 0);
+        autoCreateGoogleEvent({
+          title: `Meeting — ${lead.business_name}`,
+          description: logNote || `Meeting with ${lead.business_name}`,
+          start: d,
+          end: new Date(d.getTime() + 30 * 60 * 1000),
+        }).then((added) => {
+          if (added) toast.success("Meeting added to Google Calendar");
+        });
       }
       setLogNote("");
       invalidateAll();
@@ -443,9 +459,16 @@ export default function LeadDetailPage({
         due_date: form.due_date,
       });
       if (error) throw error;
+      // Auto-add to the user's Google Calendar if connected (silent otherwise).
+      const added = await autoCreateGoogleEvent({
+        title: `${form.title.trim()} — ${lead.business_name}`,
+        description: `ORMS task for ${lead.business_name}`,
+        start: new Date(`${form.due_date}T09:00:00`),
+      });
+      return added;
     },
-    onSuccess: () => {
-      toast.success("Task added");
+    onSuccess: (added) => {
+      toast.success(added ? "Task added — synced to Google Calendar" : "Task added");
       setTaskForm(null);
       invalidateAll();
     },

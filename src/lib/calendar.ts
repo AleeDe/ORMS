@@ -69,6 +69,30 @@ export function downloadIcs(ev: CalendarEvent, fileName = "event.ics") {
   URL.revokeObjectURL(url);
 }
 
+// Auto-create the event on the user's connected Google Calendar (server route).
+// Returns true if it was created, false if the user hasn't connected Google.
+export async function autoCreateGoogleEvent(ev: CalendarEvent): Promise<boolean> {
+  try {
+    const res = await fetch("/api/google/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: ev.title,
+        description: ev.description,
+        location: ev.location,
+        start: ev.start.toISOString(),
+        end: ev.end?.toISOString(),
+        allDay: ev.allDay,
+      }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { connected?: boolean };
+    return !!data.connected;
+  } catch {
+    return false;
+  }
+}
+
 // Google Calendar prefilled-event URL
 export function googleCalendarUrl(ev: CalendarEvent): string {
   const fmt = (d: Date) =>
