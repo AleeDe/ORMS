@@ -70,6 +70,62 @@ export function buildTrackerRows(activities: TrackerActivity[]): TrackerRow[] {
   return rows.sort((a, b) => (a.day < b.day ? 1 : -1));
 }
 
+// ---- Call performance (dials / connects / meetings / replies per day) ----
+
+export type CallDay = {
+  day: string; dateLabel: string; weekday: string;
+  dialed: number; connected: number; noAnswer: number;
+  connectRate: number; // % of dials answered
+  meetings: number; replies: number;
+};
+
+export type CallActivity = { type: string; occurred_at: string };
+
+/** Per-day call metrics for days that had any call activity (newest first). */
+export function buildCallDays(activities: CallActivity[]): CallDay[] {
+  const byDay = new Map<string, CallActivity[]>();
+  for (const a of activities) {
+    if (!CALL_TYPES.includes(a.type) && !MEETING_TYPES.includes(a.type) && !REPLY_TYPES.includes(a.type))
+      continue;
+    const day = a.occurred_at.slice(0, 10);
+    (byDay.get(day) ?? byDay.set(day, []).get(day)!).push(a);
+  }
+  const rows: CallDay[] = [];
+  for (const [day, acts] of byDay) {
+    const dialed = acts.filter((a) => CALL_TYPES.includes(a.type)).length;
+    const connected = acts.filter((a) => a.type === "CALL_CONNECTED").length;
+    if (!dialed) continue; // only days with calls
+    const d = new Date(`${day}T12:00:00`);
+    rows.push({
+      day,
+      dateLabel: format(d, "d-MMM-yyyy"),
+      weekday: format(d, "EEEE"),
+      dialed,
+      connected,
+      noAnswer: dialed - connected,
+      connectRate: dialed ? Math.round((connected / dialed) * 1000) / 10 : 0,
+      meetings: acts.filter((a) => MEETING_TYPES.includes(a.type)).length,
+      replies: acts.filter((a) => REPLY_TYPES.includes(a.type)).length,
+    });
+  }
+  return rows.sort((a, b) => (a.day < b.day ? 1 : -1));
+}
+
+export function callTotals(rows: CallDay[]) {
+  const dialed = rows.reduce((s, r) => s + r.dialed, 0);
+  const connected = rows.reduce((s, r) => s + r.connected, 0);
+  const meetings = rows.reduce((s, r) => s + r.meetings, 0);
+  const replies = rows.reduce((s, r) => s + r.replies, 0);
+  return {
+    dialed, connected, meetings, replies,
+    noAnswer: dialed - connected,
+    connectRate: dialed ? Math.round((connected / dialed) * 1000) / 10 : 0,
+    // meetings per answered conversation
+    meetingRate: connected ? Math.round((meetings / connected) * 1000) / 10 : 0,
+    activeDays: rows.length,
+  };
+}
+
 export function trackerTotals(rows: TrackerRow[]) {
   const sends = rows.reduce((s, r) => s + r.sends, 0);
   const replies = rows.reduce((s, r) => s + r.replies, 0);
