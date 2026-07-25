@@ -26,7 +26,9 @@ import { CheckCircle2, AlertTriangle } from "lucide-react";
 
 type RawRow = Record<string, string>;
 type ColumnRole = "email" | "website" | "phone" | null;
-type DupKey = "none" | "name" | "email" | "website" | "phone";
+// Dedupe key is either "none" (import everything) or the original header of the
+// column that uniquely identifies a lead (e.g. the sheet's own "ID").
+type DupKey = string; // "none" | <column original header>
 type DupMode = "skip" | "update" | "import";
 
 type ColumnConfig = {
@@ -42,6 +44,7 @@ type ParsedLead = {
   _issues: string[];
   _dupInFile?: number; // row number this duplicates within the file
   _dupOf?: string; // existing lead id this matches in the DB
+  _key: string; // normalized dedupe-key value for this row ("" if none)
   name: string;
   email: string;
   website: string;
@@ -89,7 +92,7 @@ export default function ImportPage() {
   const [rows, setRows] = useState<RawRow[]>([]);
   const [configs, setConfigs] = useState<ColumnConfig[]>([]);
   const [nameColumn, setNameColumn] = useState("");
-  const [dupKey, setDupKey] = useState<DupKey>("name");
+  const [dupKey, setDupKey] = useState<DupKey>("none");
   const [dupMode, setDupMode] = useState<DupMode>("skip");
   const [parsed, setParsed] = useState<ParsedLead[]>([]);
   const [datasetId, setDatasetId] = useState("");
@@ -128,6 +131,10 @@ export default function ImportPage() {
     setConfigs(cfgs);
     setRows(data);
     setNameColumn(guessNameColumn(cfgs, data));
+    // Default the dedupe key to an "ID"-like column if the sheet has one, so each
+    // record imports once by its own identifier; otherwise leave it off.
+    const idCol = cols.find((c) => /^(id|lead[\s_-]?id|record[\s_-]?id)$/i.test(c.trim()));
+    setDupKey(idCol ?? "none");
     setStep(2);
   }
 
@@ -184,6 +191,26 @@ export default function ImportPage() {
     const websiteCol = configs.find((c) => c.include && c.role === "website")?.original;
     const phoneCol = configs.find((c) => c.include && c.role === "phone")?.original;
 
+    // How to normalize the dedupe-key value, based on which column was chosen.
+    const keyRole: ColumnRole | "name" | "custom" =
+      dupKey === "none" ? "custom"
+      : dupKey === nameColumn ? "name"
+      : dupKey === emailCol ? "email"
+      : dupKey === websiteCol ? "website"
+      : dupKey === phoneCol ? "phone"
+      : "custom";
+    const normKey = (raw: string): string => {
+      const v = (raw ?? "").trim();
+      if (!v) return "";
+      switch (keyRole) {
+        case "name": return normalizeName(v) ?? "";
+        case "email": return normalizeEmail(v) ?? "";
+        case "website": return normalizeWebsite(v) ?? "";
+        case "phone": return normalizePhone(v) ?? "";
+        default: return v.toLowerCase(); // custom (e.g. sheet ID): exact, case-insensitive
+      }
+    };
+
     const leads: ParsedLead[] = rows.map((r, i) => {
       const name = (r[nameColumn] ?? "").trim();
       const email = emailCol ? (r[emailCol] ?? "").trim() : "";
@@ -197,6 +224,7 @@ export default function ImportPage() {
       const lead: ParsedLead = {
         _row: i + 2,
         _issues: [],
+        _key: dupKey === "none" ? "" : normKey(r[dupKey] ?? ""),
         name,
         email,
         website: websiteCol ? (r[websiteCol] ?? "").trim() : "",
@@ -213,18 +241,16 @@ export default function ImportPage() {
       // in-file duplicates: first occurrence wins
       const seen = new Map<string, number>();
       for (const l of leads) {
-        const k = leadKey(l, dupKey);
-        if (!k) continue;
-        if (seen.has(k)) l._dupInFile = seen.get(k);
-        else seen.set(k, l._row);
+        if (!l._key) continue;
+        if (seen.has(l._key)) l._dupInFile = seen.get(l._key);
+        else seen.set(l._key, l._row);
       }
 
       // DB duplicates: match against existing leads for this user
-      const existing = await buildExistingKeyMap(dupKey);
+      const existing = await buildExistingKeyMap(keyRole, dupKey);
       for (const l of leads) {
-        if (l._dupInFile) continue;
-        const k = leadKey(l, dupKey);
-        if (k && existing.has(k)) l._dupOf = existing.get(k);
+        if (l._dupInFile || !l._key) continue;
+        if (existing.has(l._key)) l._dupOf = existing.get(l._key);
       }
     }
 
@@ -232,21 +258,14 @@ export default function ImportPage() {
     setStep(3);
   }
 
-  // Normalized value of a lead's chosen dedupe key.
-  function leadKey(l: ParsedLead, key: DupKey): string {
-    switch (key) {
-      case "name": return normalizeName(l.name) ?? "";
-      case "email": return normalizeEmail(l.email) ?? "";
-      case "website": return normalizeWebsite(l.website) ?? "";
-      case "phone": return normalizePhone(l.phone) ?? "";
-      default: return "";
-    }
-  }
-
   // Loads a map of {normalized key -> existing lead id} for the current user.
-  async function buildExistingKeyMap(key: DupKey): Promise<Map<string, string>> {
+  // For a "custom" key column, the stored field name is the column's import name.
+  async function buildExistingKeyMap(
+    role: ColumnRole | "name" | "custom",
+    column: string
+  ): Promise<Map<string, string>> {
     const map = new Map<string, string>();
-    if (key === "email") {
+    if (role === "email") {
       for (let from = 0; ; from += 1000) {
         const { data, error } = await supabase
           .from("lead_emails").select("lead_id, email").range(from, from + 999);
@@ -254,12 +273,25 @@ export default function ImportPage() {
         for (const e of data) { const k = normalizeEmail(e.email); if (k) map.set(k, e.lead_id); }
         if (data.length < 1000) break;
       }
-    } else if (key === "phone") {
+    } else if (role === "phone") {
       for (let from = 0; ; from += 1000) {
         const { data, error } = await supabase
           .from("lead_phones").select("lead_id, phone_norm").range(from, from + 999);
         if (error) { toast.error(error.message); break; }
         for (const p of data) if (p.phone_norm) map.set(p.phone_norm, p.lead_id);
+        if (data.length < 1000) break;
+      }
+    } else if (role === "custom") {
+      // Match on a custom_fields value (e.g. the sheet's own "ID"). The stored key
+      // is the column's import name, which defaults to its original header.
+      const storeName = configs.find((c) => c.original === column)?.name.trim() || column;
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from("leads").select(`id, v:custom_fields->>${storeName}`).range(from, from + 999);
+        if (error) { toast.error(error.message); break; }
+        for (const l of data as unknown as { id: string; v: string | null }[]) {
+          if (l.v) map.set(l.v.trim().toLowerCase(), l.id);
+        }
         if (data.length < 1000) break;
       }
     } else {
@@ -268,8 +300,8 @@ export default function ImportPage() {
           .from("leads").select("id, name_norm, website_norm").range(from, from + 999);
         if (error) { toast.error(error.message); break; }
         for (const l of data) {
-          if (key === "name" && l.name_norm) map.set(l.name_norm, l.id);
-          if (key === "website" && l.website_norm) map.set(l.website_norm, l.id);
+          if (role === "name" && l.name_norm) map.set(l.name_norm, l.id);
+          if (role === "website" && l.website_norm) map.set(l.website_norm, l.id);
         }
         if (data.length < 1000) break;
       }
@@ -458,20 +490,20 @@ export default function ImportPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Duplicate key (one record per…)</Label>
+                <Label>Primary key (unique per lead)</Label>
                 <Select value={dupKey} onValueChange={(v) => setDupKey(v as DupKey)}>
                   <SelectTrigger className="w-60"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="name">Name</SelectItem>
-                    <SelectItem value="email">Email</SelectItem>
-                    <SelectItem value="website">Website</SelectItem>
-                    <SelectItem value="phone">Phone</SelectItem>
                     <SelectItem value="none">None — import every row</SelectItem>
+                    {configs.filter((c) => c.include).map((c) => (
+                      <SelectItem key={c.original} value={c.original}>{c.original}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <p className="max-w-60 text-xs text-muted-foreground">
-                  Rows sharing this value (in the file or already in your leads) are treated as
-                  the same lead. You choose what to do with them next.
+                  Which column uniquely identifies a lead (e.g. your sheet&apos;s <strong>ID</strong>).
+                  Rows sharing this value — in the file or already in your leads — are treated as the
+                  same lead, so each one imports once.
                 </p>
               </div>
             </div>
