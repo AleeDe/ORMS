@@ -7,7 +7,7 @@ import * as XLSX from "xlsx";
 import { useQuery } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import {
-  normalizeName, normalizePhone, normalizeWebsite, isValidEmailSyntax,
+  normalizeName, normalizePhone, normalizeWebsite, normalizeEmail, isValidEmailSyntax,
 } from "@/lib/normalize";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +26,8 @@ import { CheckCircle2, AlertTriangle } from "lucide-react";
 
 type RawRow = Record<string, string>;
 type ColumnRole = "email" | "website" | "phone" | null;
+type DupKey = "none" | "name" | "email" | "website" | "phone";
+type DupMode = "skip" | "update" | "import";
 
 type ColumnConfig = {
   original: string; // header exactly as it appears in the file
@@ -38,6 +40,8 @@ type ColumnConfig = {
 type ParsedLead = {
   _row: number;
   _issues: string[];
+  _dupInFile?: number; // row number this duplicates within the file
+  _dupOf?: string; // existing lead id this matches in the DB
   name: string;
   email: string;
   website: string;
@@ -85,13 +89,16 @@ export default function ImportPage() {
   const [rows, setRows] = useState<RawRow[]>([]);
   const [configs, setConfigs] = useState<ColumnConfig[]>([]);
   const [nameColumn, setNameColumn] = useState("");
+  const [dupKey, setDupKey] = useState<DupKey>("name");
+  const [dupMode, setDupMode] = useState<DupMode>("skip");
   const [parsed, setParsed] = useState<ParsedLead[]>([]);
   const [datasetId, setDatasetId] = useState("");
   const [newDatasetName, setNewDatasetName] = useState("");
   const [importing, setImporting] = useState(false);
+  const [validating, setValidating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [summary, setSummary] = useState<{
-    imported: number; invalid: number; failed: number;
+    imported: number; updated: number; skippedDup: number; invalid: number; failed: number;
   } | null>(null);
 
   const { data: datasets } = useQuery({
@@ -170,9 +177,9 @@ export default function ImportPage() {
     return !!c && c.include;
   }, [configs, nameColumn]);
 
-  // Step 2 -> 3. No deduplication: every row is imported (only rows that can't
-  // form a valid lead — empty name / malformed email — are flagged).
-  function runValidation() {
+  // Step 2 -> 3. Validates rows and, unless the dedupe key is "none", flags
+  // duplicates (within the file and against existing leads).
+  async function runValidation() {
     const emailCol = configs.find((c) => c.include && c.role === "email")?.original;
     const websiteCol = configs.find((c) => c.include && c.role === "website")?.original;
     const phoneCol = configs.find((c) => c.include && c.role === "phone")?.original;
@@ -201,14 +208,81 @@ export default function ImportPage() {
       return lead;
     });
 
+    // Duplicate detection on the chosen primary key (skip when key = none).
+    if (dupKey !== "none") {
+      // in-file duplicates: first occurrence wins
+      const seen = new Map<string, number>();
+      for (const l of leads) {
+        const k = leadKey(l, dupKey);
+        if (!k) continue;
+        if (seen.has(k)) l._dupInFile = seen.get(k);
+        else seen.set(k, l._row);
+      }
+
+      // DB duplicates: match against existing leads for this user
+      const existing = await buildExistingKeyMap(dupKey);
+      for (const l of leads) {
+        if (l._dupInFile) continue;
+        const k = leadKey(l, dupKey);
+        if (k && existing.has(k)) l._dupOf = existing.get(k);
+      }
+    }
+
     setParsed(leads);
     setStep(3);
   }
 
+  // Normalized value of a lead's chosen dedupe key.
+  function leadKey(l: ParsedLead, key: DupKey): string {
+    switch (key) {
+      case "name": return normalizeName(l.name) ?? "";
+      case "email": return normalizeEmail(l.email) ?? "";
+      case "website": return normalizeWebsite(l.website) ?? "";
+      case "phone": return normalizePhone(l.phone) ?? "";
+      default: return "";
+    }
+  }
+
+  // Loads a map of {normalized key -> existing lead id} for the current user.
+  async function buildExistingKeyMap(key: DupKey): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    if (key === "email") {
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from("lead_emails").select("lead_id, email").range(from, from + 999);
+        if (error) { toast.error(error.message); break; }
+        for (const e of data) { const k = normalizeEmail(e.email); if (k) map.set(k, e.lead_id); }
+        if (data.length < 1000) break;
+      }
+    } else if (key === "phone") {
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from("lead_phones").select("lead_id, phone_norm").range(from, from + 999);
+        if (error) { toast.error(error.message); break; }
+        for (const p of data) if (p.phone_norm) map.set(p.phone_norm, p.lead_id);
+        if (data.length < 1000) break;
+      }
+    } else {
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from("leads").select("id, name_norm, website_norm").range(from, from + 999);
+        if (error) { toast.error(error.message); break; }
+        for (const l of data) {
+          if (key === "name" && l.name_norm) map.set(l.name_norm, l.id);
+          if (key === "website" && l.website_norm) map.set(l.website_norm, l.id);
+        }
+        if (data.length < 1000) break;
+      }
+    }
+    return map;
+  }
+
   const stats = useMemo(() => {
     const invalid = parsed.filter((l) => l._issues.length > 0);
-    const clean = parsed.filter((l) => !l._issues.length);
-    return { invalid, clean };
+    const valid = parsed.filter((l) => !l._issues.length);
+    const dups = valid.filter((l) => l._dupInFile || l._dupOf);
+    const clean = valid.filter((l) => !l._dupInFile && !l._dupOf);
+    return { invalid, clean, dups };
   }, [parsed]);
 
   async function runImport() {
@@ -229,7 +303,7 @@ export default function ImportPage() {
         dsId = data.id;
       }
 
-      let imported = 0, failed = 0;
+      let imported = 0, updated = 0, failed = 0;
 
       const toLeadRow = (l: ParsedLead) => ({
         user_id: userId,
@@ -242,7 +316,20 @@ export default function ImportPage() {
         custom_fields: l.custom,
       });
 
-      const toInsert = stats.clean;
+      // Duplicates matching existing leads: update them in place if chosen.
+      if (dupMode === "update") {
+        for (const l of stats.dups.filter((d) => d._dupOf)) {
+          const { error } = await supabase
+            .from("leads").update(toLeadRow(l)).eq("id", l._dupOf!);
+          if (error) failed++; else updated++;
+        }
+      }
+
+      // Rows to insert: clean always; duplicates too only when "import anyway".
+      const toInsert = dupMode === "import" ? [...stats.clean, ...stats.dups] : stats.clean;
+      const skippedDup = dupMode === "skip" ? stats.dups.length
+        : dupMode === "update" ? stats.dups.filter((d) => d._dupInFile && !d._dupOf).length
+        : 0;
 
       const CHUNK = 250;
       for (let i = 0; i < toInsert.length; i += CHUNK) {
@@ -273,7 +360,7 @@ export default function ImportPage() {
         setProgress(Math.round(((i + chunk.length) / Math.max(toInsert.length, 1)) * 100));
       }
 
-      setSummary({ imported, invalid: stats.invalid.length, failed });
+      setSummary({ imported, updated, skippedDup, invalid: stats.invalid.length, failed });
       setStep(5);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Import failed");
@@ -358,16 +445,35 @@ export default function ImportPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Lead name column (shown in lists &amp; tasks)</Label>
-              <Select value={nameColumn} onValueChange={setNameColumn}>
-                <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {configs.map((c) => (
-                    <SelectItem key={c.original} value={c.original}>{c.original}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="flex flex-wrap gap-6">
+              <div className="space-y-2">
+                <Label>Lead name column (shown in lists &amp; tasks)</Label>
+                <Select value={nameColumn} onValueChange={setNameColumn}>
+                  <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {configs.map((c) => (
+                      <SelectItem key={c.original} value={c.original}>{c.original}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Duplicate key (one record per…)</Label>
+                <Select value={dupKey} onValueChange={(v) => setDupKey(v as DupKey)}>
+                  <SelectTrigger className="w-60"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="name">Name</SelectItem>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="website">Website</SelectItem>
+                    <SelectItem value="phone">Phone</SelectItem>
+                    <SelectItem value="none">None — import every row</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="max-w-60 text-xs text-muted-foreground">
+                  Rows sharing this value (in the file or already in your leads) are treated as
+                  the same lead. You choose what to do with them next.
+                </p>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -427,7 +533,12 @@ export default function ImportPage() {
 
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
-              <Button onClick={runValidation} disabled={!nameConfigValid}>Validate</Button>
+              <Button
+                onClick={async () => { setValidating(true); await runValidation(); setValidating(false); }}
+                disabled={!nameConfigValid || validating}
+              >
+                {validating ? "Checking…" : "Validate"}
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -435,20 +546,50 @@ export default function ImportPage() {
 
       {step === 3 && (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <Card>
               <CardContent className="pt-4">
-                <p className="text-sm text-muted-foreground">Rows to import</p>
+                <p className="text-sm text-muted-foreground">New leads</p>
                 <p className="text-2xl font-bold text-green-600">{stats.clean.length}</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="pt-4">
-                <p className="text-sm text-muted-foreground">Invalid rows (skipped)</p>
+                <p className="text-sm text-muted-foreground">Duplicates ({dupKey})</p>
+                <p className="text-2xl font-bold text-amber-600">{stats.dups.length}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-4">
+                <p className="text-sm text-muted-foreground">Invalid (skipped)</p>
                 <p className="text-2xl font-bold text-destructive">{stats.invalid.length}</p>
               </CardContent>
             </Card>
           </div>
+
+          {stats.dups.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">
+                  {stats.dups.length} duplicate rows (matched on {dupKey})
+                </CardTitle>
+                <CardDescription>
+                  These share their {dupKey} with another row in the file or with an existing lead.
+                  Choose what to do.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Select value={dupMode} onValueChange={(v) => setDupMode(v as DupMode)}>
+                  <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="skip">Skip duplicates (keep one record)</SelectItem>
+                    <SelectItem value="update">Update the existing lead</SelectItem>
+                    <SelectItem value="import">Import anyway (create new)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </CardContent>
+            </Card>
+          )}
 
           {stats.invalid.length > 0 && (
             <Card>
@@ -524,7 +665,10 @@ export default function ImportPage() {
               </div>
             )}
             <p className="text-sm text-muted-foreground">
-              Importing {stats.clean.length} leads. Invalid rows are skipped.
+              Importing {dupMode === "import" ? stats.clean.length + stats.dups.length : stats.clean.length} leads
+              {dupMode === "update" && stats.dups.length > 0 && `, updating ${stats.dups.filter((d) => d._dupOf).length} existing`}
+              {dupMode === "skip" && stats.dups.length > 0 && `, skipping ${stats.dups.length} duplicates`}
+              . Invalid rows are skipped.
             </p>
             {importing && (
               <div className="h-2 w-full overflow-hidden rounded bg-muted">
@@ -554,6 +698,8 @@ export default function ImportPage() {
           <CardContent className="space-y-4">
             <ul className="space-y-1 text-sm">
               <li><strong>{summary.imported}</strong> leads imported</li>
+              <li><strong>{summary.updated}</strong> existing leads updated</li>
+              <li><strong>{summary.skippedDup}</strong> duplicates skipped</li>
               <li><strong>{summary.invalid}</strong> invalid rows skipped</li>
               <li><strong>{summary.failed}</strong> failed rows</li>
             </ul>
