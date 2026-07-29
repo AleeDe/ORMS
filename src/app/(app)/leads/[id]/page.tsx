@@ -34,6 +34,7 @@ import {
   CHANNEL_LABELS, CHANNEL_ORDER, ROLE_OPTIONS, personLabel,
   type ContactChannel, type Person,
 } from "@/lib/people";
+import { LeadSequences } from "@/components/lead-sequences";
 
 const ACTIVITY_ICONS: Record<string, React.ElementType> = {
   EMAIL_SENT: Mail,
@@ -991,6 +992,26 @@ export default function LeadDetailPage({
               ))}
             </CardContent>
           </Card>
+
+          <LeadSequences
+            leadId={id}
+            campaignId={lead.campaign_leads?.[0]?.campaigns?.id ?? null}
+            emails={[
+              ...((lead.lead_emails ?? []) as { email: string }[]).map((e) => ({
+                email: e.email,
+                personId: null,
+              })),
+              ...people
+                .filter((p) => p.email || p.personal_email)
+                .map((p) => ({
+                  email: (p.personal_email || p.email) as string,
+                  personId: p.id,
+                  label: p.name,
+                })),
+            ].filter(
+              (e, i, arr) => e.email && arr.findIndex((x) => x.email === e.email) === i
+            )}
+          />
 
           <Card>
             <CardHeader className="pb-2">

@@ -29,15 +29,34 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const isLoginPage = request.nextUrl.pathname.startsWith("/login");
+  const path = request.nextUrl.pathname;
+  const isLoginPage = path.startsWith("/login");
+  // The recovery link must reach this route while signed out — it is what
+  // exchanges the emailed token for a session.
+  const isAuthConfirm = path.startsWith("/auth/confirm");
+  const isUpdatePassword = path.startsWith("/login/update-password");
 
-  if (!user && !isLoginPage) {
+  if (!user && !isLoginPage && !isAuthConfirm) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
   }
 
-  if (user && isLoginPage) {
+  // Setting a new password requires the session that /auth/confirm established.
+  // Without one the link was never exchanged (expired, reused, or opened
+  // directly), so send them to request a fresh one rather than rendering a form
+  // whose submit cannot succeed.
+  if (!user && isUpdatePassword) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login/forgot-password";
+    url.searchParams.set("error", "invalid_link");
+    return NextResponse.redirect(url);
+  }
+
+  // A signed-in user belongs on the app, except on update-password: arriving
+  // there from a recovery link means they are already authenticated and still
+  // need to set a new password.
+  if (user && isLoginPage && !isUpdatePassword) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
     return NextResponse.redirect(url);

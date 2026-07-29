@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
@@ -175,6 +176,32 @@ function SettingsEditor({ initial }: { initial: SettingsForm }) {
       </Card>
 
       <GoogleCalendarCard />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Email &amp; Sequences</CardTitle>
+          <CardDescription>
+            Sending domains, sender addresses, and email sequences.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" asChild>
+            <Link href="/settings/email">Manage email settings</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Account</CardTitle>
+          <CardDescription>Change the password you sign in with.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" asChild>
+            <Link href="/login/update-password">Change password</Link>
+          </Button>
+        </CardContent>
+      </Card>
 
       <Button onClick={() => save.mutate()} disabled={save.isPending}>
         Save Settings
