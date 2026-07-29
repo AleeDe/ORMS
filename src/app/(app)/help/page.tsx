@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { CalendarCheck, Search, ListChecks, Mail, Users, Filter } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { CalendarCheck, Search, ListChecks, Mail, Users, Filter, Send } from "lucide-react";
 
 // Plain-language guide to the features that aren't self-explanatory.
 export default function HelpPage() {
@@ -15,6 +16,37 @@ export default function HelpPage() {
           How the main features work. Everything here is optional — the app works without any setup.
         </p>
       </div>
+
+      <Card className="border-primary/40">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Send className="h-4 w-4" /> Email sequences &amp; sending
+          </CardTitle>
+          <CardDescription>
+            Automated follow-up scheduling with manual sending — you review and send every email.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            Create reusable sequences, assign them to leads, and ORMS schedules each follow-up into
+            your{" "}
+            <Link href="/emails" className="text-primary hover:underline">Ready to Review</Link>{" "}
+            queue on the right day. Nothing is ever sent automatically.
+          </p>
+          <p className="text-muted-foreground">
+            Setup needs a Resend account, a verified domain and a sender — every field is explained
+            step by step in the dedicated guide.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" asChild>
+              <Link href="/help/email">Open the email setup guide</Link>
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/settings/email">Email settings</Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
