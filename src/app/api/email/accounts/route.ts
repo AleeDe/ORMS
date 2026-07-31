@@ -15,11 +15,15 @@ export async function POST(req: NextRequest) {
   // Checked up front so a missing secret fails with a clear instruction rather
   // than an opaque crash halfway through.
   if (!process.env.ENCRYPTION_SECRET) {
+    // Server misconfiguration, not user error — 500, and name the place the
+    // variable actually has to be set for this environment.
     return NextResponse.json(
       {
         error:
-          "ENCRYPTION_SECRET is not set in .env.local — API keys cannot be stored securely without it. " +
-          "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
+          "ENCRYPTION_SECRET is not set on the server, so API keys cannot be stored securely. " +
+          "Locally: add it to .env.local. On Vercel: Project → Settings → Environment Variables, " +
+          "then redeploy (env changes only apply to new deployments). " +
+          "Generate a value with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
       },
       { status: 500 }
     );
