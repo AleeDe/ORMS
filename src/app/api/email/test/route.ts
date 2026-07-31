@@ -55,10 +55,30 @@ export async function POST(req: NextRequest) {
   try {
     apiKey = await getKeyForDomain(domain.id, auth.user.id);
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "No Resend account for this domain." },
-      { status: 400 }
-    );
+    const msg = e instanceof Error ? e.message : "No Resend account for this domain.";
+    // A missing/changed ENCRYPTION_SECRET is a server config problem, not
+    // something the user can fix by re-picking a sender.
+    if (msg.includes("ENCRYPTION_SECRET")) {
+      return NextResponse.json(
+        {
+          error:
+            "The server is missing ENCRYPTION_SECRET, so stored API keys cannot be read. " +
+            "On Vercel add it under Project → Settings → Environment Variables and redeploy.",
+        },
+        { status: 500 }
+      );
+    }
+    if (/bad decrypt|unable to authenticate|wrong final block/i.test(msg)) {
+      return NextResponse.json(
+        {
+          error:
+            "Stored API keys can't be decrypted — ENCRYPTION_SECRET differs from the one used when the account was connected. " +
+            "Restore the original value, or disconnect and reconnect the Resend account.",
+        },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
 
   const address = `${sender.local_part}@${domain.domain}`;
