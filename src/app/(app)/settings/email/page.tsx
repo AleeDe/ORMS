@@ -180,7 +180,15 @@ export default function EmailSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
-      const json = await res.json();
+      // A crashed route returns HTML, and parsing that blind previously turned a
+      // real failure into a success toast while the account stayed in the list.
+      const raw = await res.text();
+      let json: { error?: string };
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        throw new Error(`Server error (${res.status}) — the account was not removed.`);
+      }
       if (!res.ok) throw new Error(json.error || "Could not disconnect");
     },
     onSuccess: () => {

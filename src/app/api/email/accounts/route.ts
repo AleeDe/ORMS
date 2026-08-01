@@ -118,13 +118,44 @@ export async function DELETE(req: NextRequest) {
   const { id } = (await req.json()) as { id?: string };
   if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return NextResponse.json(
+      {
+        error:
+          "SUPABASE_SERVICE_ROLE_KEY is not set on the server, so accounts cannot be removed. " +
+          "On Vercel add it under Project → Settings → Environment Variables and redeploy.",
+      },
+      { status: 500 }
+    );
+  }
+
   const admin = createAdminClient();
-  const { error } = await admin
+  // Ask for the deleted rows back: a wrong service key returns 401, and without
+  // this the call looked like a success while nothing was removed.
+  const { data, error } = await admin
     .from("email_accounts")
     .delete()
     .eq("id", id)
-    .eq("user_id", auth.user.id);
+    .eq("user_id", auth.user.id)
+    .select("id");
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json(
+      {
+        error: /invalid api key|jwt/i.test(error.message)
+          ? "SUPABASE_SERVICE_ROLE_KEY is wrong on the server — the account could not be removed."
+          : error.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  if (!data?.length) {
+    return NextResponse.json(
+      { error: "That account was not found, or it belongs to a different login." },
+      { status: 404 }
+    );
+  }
+
   return NextResponse.json({ deleted: true });
 }
