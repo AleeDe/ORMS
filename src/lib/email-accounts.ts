@@ -54,6 +54,12 @@ export async function getAccountKey(
   accountId: string,
   userId: string
 ): Promise<string> {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "SUPABASE_SERVICE_ROLE_KEY is not set on the server, so stored API keys cannot be read."
+    );
+  }
+
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("email_accounts")
@@ -61,7 +67,14 @@ export async function getAccountKey(
     .eq("id", accountId)
     .maybeSingle();
 
-  if (error || !data) throw new Error("That Resend account is not connected.");
+  if (error) {
+    throw new Error(
+      /invalid api key|jwt/i.test(error.message)
+        ? "SUPABASE_SERVICE_ROLE_KEY is wrong or missing on the server — stored API keys can't be read."
+        : `Could not read the connected account: ${error.message}`
+    );
+  }
+  if (!data) throw new Error("That Resend account is not connected.");
   if (data.user_id !== userId) throw new Error("That Resend account is not yours.");
   if (!data.is_active) throw new Error("That Resend account is disabled.");
 
@@ -76,6 +89,12 @@ export async function getKeyForDomain(
   domainId: string,
   userId: string
 ): Promise<string> {
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "SUPABASE_SERVICE_ROLE_KEY is not set on the server, so stored email settings cannot be read."
+    );
+  }
+
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("email_domains")
@@ -83,7 +102,16 @@ export async function getKeyForDomain(
     .eq("id", domainId)
     .maybeSingle();
 
-  if (error || !data) throw new Error("Domain not found.");
+  // A bad service-role key returns 401 here, which previously surfaced as the
+  // misleading "Domain not found" — the row exists, we just couldn't read it.
+  if (error) {
+    throw new Error(
+      /invalid api key|jwt/i.test(error.message)
+        ? "SUPABASE_SERVICE_ROLE_KEY is wrong or missing on the server — email settings can't be read."
+        : `Could not read email settings: ${error.message}`
+    );
+  }
+  if (!data) throw new Error("Domain not found.");
   if (data.user_id !== userId) throw new Error("That domain is not yours.");
 
   return getAccountKey(data.account_id as string, userId);

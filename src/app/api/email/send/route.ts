@@ -92,6 +92,9 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+    if (msg.includes("SUPABASE_SERVICE_ROLE_KEY")) {
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
     if (/bad decrypt|unable to authenticate|wrong final block/i.test(msg)) {
       return NextResponse.json(
         {
