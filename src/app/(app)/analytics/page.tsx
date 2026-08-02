@@ -12,6 +12,7 @@ import { DailyTracker } from "@/components/daily-tracker";
 import { Badge } from "@/components/ui/badge";
 import { toneClass } from "@/lib/badge-styles";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SequenceAnalytics } from "@/components/sequence-analytics";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -535,6 +536,14 @@ export default function AnalyticsPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <div className="pt-2">
+        <h2 className="text-lg font-semibold tracking-tight">Email sequences</h2>
+        <p className="text-sm text-muted-foreground mb-4">
+          Which steps earn replies, and when to send.
+        </p>
+        <SequenceAnalytics />
+      </div>
     </div>
   );
 }

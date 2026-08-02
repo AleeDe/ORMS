@@ -8,6 +8,7 @@ import { todayStr } from "@/lib/dates";
 import {
   materializeDue, skipQueueItem, pauseEnrollment, stopForLead, type QueueItem,
 } from "@/lib/sequences";
+import { formatSlot } from "@/lib/send-window";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import {
   Mail, Send, SkipForward, PauseCircle, MessageSquareReply, Pencil, X, HelpCircle,
 } from "lucide-react";
 import { toneClass } from "@/lib/badge-styles";
+import { CapacityPanel } from "@/components/capacity-panel";
 
 // Ready to Review: emails ORMS has PREPARED and a human must SEND. Deliberately
 // mirrors the Tasks page — same tab shape, same one-click-per-row rhythm.
@@ -71,21 +73,40 @@ export default function EmailsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ queueItemId: item.id, ...payload }),
       });
-      const json = await res.json();
+      const raw = await res.text();
+      let json: { error?: string; capReached?: boolean; sequenceCompleted?: boolean; nextDue?: string | null };
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        throw new Error(`Server error (${res.status}) — the email was not sent.`);
+      }
       if (!res.ok) throw new Error(json.error || "Send failed");
-      return json as { sequenceCompleted: boolean; nextDue: string | null };
+      return json as {
+        sequenceCompleted: boolean;
+        nextDue: string | null;
+        scheduledAt: string | null;
+        scheduleReason: "immediate" | "later-today" | "tomorrow";
+        timezone: string | null;
+      };
     },
     onSuccess: (r) => {
       setEditing(null);
+      // Approving is not sending when a window is set, so say which it was.
+      const when = r.scheduledAt
+        ? `Queued — delivers ${formatSlot(r.scheduledAt, r.timezone || "UTC")}`
+        : "Sent";
       toast.success(
         r.sequenceCompleted
-          ? "Sent — sequence finished for this lead"
-          : `Sent — next step scheduled for ${r.nextDue}`
+          ? `${when}. Sequence finished for this lead.`
+          : `${when}. Next step due ${r.nextDue}.`
       );
       invalidateAll();
       queryClient.invalidateQueries({ queryKey: ["materialize"] });
+      queryClient.invalidateQueries({ queryKey: ["sending-capacity"] });
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) =>
+      // The cap message is long and actionable, so give it time to be read.
+      toast.error(e.message, { duration: /limit is used up/.test(e.message) ? 8000 : 4000 }),
   });
 
   const skip = useMutation({
@@ -132,6 +153,8 @@ export default function EmailsPage() {
   const dueToday = ready.filter((i) => i.due_date === today);
   const overdue = ready.filter((i) => i.due_date < today);
   const upcoming = ready.filter((i) => i.due_date > today);
+  // Approved but not yet delivered — handed to Resend, waiting for the window.
+  const scheduled = (items ?? []).filter((i) => i.status === "approved");
   const sent = (items ?? []).filter((i) => i.status === "sent");
   const other = (items ?? []).filter((i) =>
     ["skipped", "failed", "bounced", "cancelled"].includes(i.status)
@@ -182,9 +205,13 @@ export default function EmailsPage() {
                     </p>
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {item.status === "sent" && item.sent_at
-                      ? `Sent ${item.sent_at.slice(0, 10)}`
-                      : `Due ${item.due_date}`}
+                    {item.status === "approved" && item.scheduled_at
+                      ? `Delivers ${new Date(item.scheduled_at).toLocaleString(undefined, {
+                          weekday: "short", hour: "2-digit", minute: "2-digit",
+                        })}`
+                      : item.status === "sent" && item.sent_at
+                        ? `Sent ${item.sent_at.slice(0, 10)}`
+                        : `Due ${item.due_date}`}
                   </span>
                 </div>
 
@@ -279,11 +306,14 @@ export default function EmailsPage() {
         </div>
       </div>
 
+      <CapacityPanel />
+
       <Tabs defaultValue="today">
         <TabsList>
           <TabsTrigger value="today">Due Today ({dueToday.length})</TabsTrigger>
           <TabsTrigger value="overdue">Overdue ({overdue.length})</TabsTrigger>
           <TabsTrigger value="upcoming">Upcoming ({upcoming.length})</TabsTrigger>
+          <TabsTrigger value="scheduled">Scheduled ({scheduled.length})</TabsTrigger>
           <TabsTrigger value="sent">Sent ({sent.length})</TabsTrigger>
           <TabsTrigger value="other">Skipped &amp; failed ({other.length})</TabsTrigger>
         </TabsList>
@@ -296,6 +326,15 @@ export default function EmailsPage() {
         </TabsContent>
         <TabsContent value="upcoming" className="mt-4">
           {renderList(upcoming, "Nothing scheduled yet.")}
+        </TabsContent>
+        <TabsContent value="scheduled" className="mt-4">
+          {scheduled.length > 0 && (
+            <p className="mb-3 text-sm text-muted-foreground">
+              Approved and waiting for your send window. Resend delivers these automatically —
+              nothing more to do.
+            </p>
+          )}
+          {renderList(scheduled, "Nothing waiting to be delivered.", false)}
         </TabsContent>
         <TabsContent value="sent" className="mt-4">
           {renderList(sent, "No emails sent yet.", false)}

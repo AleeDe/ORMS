@@ -102,6 +102,11 @@ export type SendEmailInput = {
    * recipient's inbox instead of arriving as unrelated messages.
    */
   inReplyTo?: string;
+  /**
+   * ISO 8601 delivery time. Resend holds the message and delivers it then, so
+   * reviewing at 9am can still land the email inside a 1pm–2pm outreach window.
+   */
+  scheduledAt?: string;
 };
 
 export async function sendEmail(apiKey: string, input: SendEmailInput) {
@@ -122,6 +127,7 @@ export async function sendEmail(apiKey: string, input: SendEmailInput) {
       text: input.text,
       reply_to: input.replyTo || undefined,
       headers: Object.keys(headers).length ? headers : undefined,
+      scheduled_at: input.scheduledAt || undefined,
     },
   });
 }
