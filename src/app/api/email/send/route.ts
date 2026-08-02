@@ -66,6 +66,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Daily cap is a hard stop: refuse rather than silently exceeding it, because
+  // going over is what gets a young domain filtered as spam.
+  const { data: capRows } = await supabase.rpc("sending_capacity_today");
+  const capacity = Array.isArray(capRows) ? capRows[0] : capRows;
+
+  if (capacity && capacity.remaining <= 0) {
+    return NextResponse.json(
+      {
+        error:
+          `Today's sending limit is used up (${capacity.used_today}/${capacity.cap}). ` +
+          `This email stays in your queue — send it tomorrow.` +
+          (capacity.warmup_active
+            ? ` You're in warm-up week ${capacity.warmup_week} of 5; the limit rises each week.`
+            : ""),
+        capReached: true,
+      },
+      { status: 429 }
+    );
+  }
+
   const finalSubject = subject?.trim() || item.subject;
   const finalBodyBase = body?.trim() || item.body;
   const finalBody = sender.signature
@@ -142,6 +162,26 @@ export async function POST(req: NextRequest) {
       error: null,
     })
     .eq("id", item.id);
+
+  // Append-only record of what actually reached the provider. Capacity is counted
+  // from this rather than from email_queue, whose rows get edited and cancelled.
+  await supabase.from("email_send_log").insert({
+    user_id: auth.user.id,
+    domain_id: domain.id,
+    queue_item_id: item.id,
+    lead_id: item.lead_id,
+    step_position: item.step_position,
+    is_followup: item.step_position > 1,
+    resend_message_id: messageId,
+  });
+
+  // Warm-up starts at the first real send, not at domain verification — a domain
+  // sitting idle for a week has built no reputation.
+  await supabase
+    .from("email_domains")
+    .update({ warmup_started_on: new Date().toISOString().slice(0, 10) })
+    .eq("id", domain.id)
+    .is("warmup_started_on", null);
 
   // --- Reuse the existing quick-log rules (PRD §12.2) ---------------------
   // Step 1 is an initial send; every later step is a follow-up.

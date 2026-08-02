@@ -19,6 +19,7 @@ import {
   Mail, Send, SkipForward, PauseCircle, MessageSquareReply, Pencil, X, HelpCircle,
 } from "lucide-react";
 import { toneClass } from "@/lib/badge-styles";
+import { CapacityPanel } from "@/components/capacity-panel";
 
 // Ready to Review: emails ORMS has PREPARED and a human must SEND. Deliberately
 // mirrors the Tasks page — same tab shape, same one-click-per-row rhythm.
@@ -71,7 +72,13 @@ export default function EmailsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ queueItemId: item.id, ...payload }),
       });
-      const json = await res.json();
+      const raw = await res.text();
+      let json: { error?: string; capReached?: boolean; sequenceCompleted?: boolean; nextDue?: string | null };
+      try {
+        json = JSON.parse(raw);
+      } catch {
+        throw new Error(`Server error (${res.status}) — the email was not sent.`);
+      }
       if (!res.ok) throw new Error(json.error || "Send failed");
       return json as { sequenceCompleted: boolean; nextDue: string | null };
     },
@@ -84,8 +91,11 @@ export default function EmailsPage() {
       );
       invalidateAll();
       queryClient.invalidateQueries({ queryKey: ["materialize"] });
+      queryClient.invalidateQueries({ queryKey: ["sending-capacity"] });
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) =>
+      // The cap message is long and actionable, so give it time to be read.
+      toast.error(e.message, { duration: /limit is used up/.test(e.message) ? 8000 : 4000 }),
   });
 
   const skip = useMutation({
@@ -278,6 +288,8 @@ export default function EmailsPage() {
           </Button>
         </div>
       </div>
+
+      <CapacityPanel />
 
       <Tabs defaultValue="today">
         <TabsList>
