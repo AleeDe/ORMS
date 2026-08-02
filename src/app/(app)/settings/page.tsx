@@ -25,6 +25,8 @@ const DEFAULTS = {
   outreach_start_time: "10:00",
   outreach_end_time: "12:00",
   timezone: "Europe/London",
+  schedule_in_window: true,
+  daily_email_target: null as number | null,
   default_followup_days: 3,
   notify_followups: true,
   notify_overdue: true,
@@ -52,6 +54,8 @@ export default function SettingsPage() {
         outreach_start_time: settings.outreach_start_time.slice(0, 5),
         outreach_end_time: settings.outreach_end_time.slice(0, 5),
         timezone: settings.timezone,
+        schedule_in_window: settings.schedule_in_window ?? true,
+        daily_email_target: settings.daily_email_target ?? null,
         default_followup_days: settings.default_followup_days,
         notify_followups: settings.notify_followups,
         notify_overdue: settings.notify_overdue,
@@ -124,6 +128,41 @@ function SettingsEditor({ initial }: { initial: SettingsForm }) {
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between gap-4">
+              <Label>Deliver sequence emails inside this window</Label>
+              <Switch
+                checked={form.schedule_in_window}
+                onCheckedChange={(v) => setForm({ ...form, schedule_in_window: v })}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              On: review whenever suits you, and approved emails are held until the window —
+              spread across it rather than sent in one burst. Off: they go the moment you click
+              Send.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Daily email target (optional)</Label>
+            <Input
+              type="number" min={1} className="w-32"
+              placeholder="auto"
+              value={form.daily_email_target ?? ""}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  daily_email_target: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave blank to let ORMS decide from your warm-up week and provider limit. Setting a
+              value only ever lowers the cap — it cannot exceed what your provider allows or what
+              warm-up currently permits.
+            </p>
           </div>
         </CardContent>
       </Card>

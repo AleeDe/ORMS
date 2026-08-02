@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { sendEmail, formatFrom } from "@/lib/resend";
 import { getKeyForDomain } from "@/lib/email-accounts";
+import { nextSendSlot } from "@/lib/send-window";
 
 // Sends one reviewed email from the Ready to Review queue. This route only ever
 // runs because a human clicked Send — nothing here is triggered on a schedule.
@@ -86,6 +87,35 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Work out when this should actually land. Reviewing at 9am should still
+  // deliver inside the outreach window, so approving is not the same as sending.
+  const { data: settings } = await supabase
+    .from("settings")
+    .select("outreach_start_time, outreach_end_time, timezone, schedule_in_window, default_followup_days")
+    .eq("user_id", auth.user.id)
+    .maybeSingle();
+
+  // Count what is already queued for the same window so sends spread out
+  // instead of arriving as one burst.
+  const { count: pendingScheduled } = await supabase
+    .from("email_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", auth.user.id)
+    .eq("status", "approved")
+    .gte("scheduled_at", new Date().toISOString());
+
+  const slot = settings
+    ? nextSendSlot(
+        {
+          outreach_start_time: settings.outreach_start_time,
+          outreach_end_time: settings.outreach_end_time,
+          timezone: settings.timezone,
+          schedule_in_window: settings.schedule_in_window ?? true,
+        },
+        pendingScheduled ?? 0
+      )
+    : { scheduledAt: null, reason: "immediate" as const };
+
   const finalSubject = subject?.trim() || item.subject;
   const finalBodyBase = body?.trim() || item.body;
   const finalBody = sender.signature
@@ -138,6 +168,8 @@ export async function POST(req: NextRequest) {
       replyTo: sender.reply_to || undefined,
       // Threads step 2+ under the original conversation.
       inReplyTo: item.in_reply_to || undefined,
+      // Resend holds it until the window rather than us running a cron.
+      scheduledAt: slot.scheduledAt || undefined,
     });
     messageId = sent.id;
   } catch (e) {
@@ -153,8 +185,11 @@ export async function POST(req: NextRequest) {
   await supabase
     .from("email_queue")
     .update({
-      status: "sent",
-      sent_at: new Date().toISOString(),
+      // 'approved' means reviewed and handed to Resend, but not delivered yet.
+      status: slot.scheduledAt ? "approved" : "sent",
+      approved_at: new Date().toISOString(),
+      scheduled_at: slot.scheduledAt,
+      sent_at: slot.scheduledAt ? null : new Date().toISOString(),
       resend_message_id: messageId,
       subject: finalSubject,
       body: finalBody,
@@ -187,11 +222,7 @@ export async function POST(req: NextRequest) {
   // Step 1 is an initial send; every later step is a follow-up.
   const action = item.step_position === 1 ? "EMAIL_SENT" : "FOLLOWUP_SENT";
 
-  const { data: settings } = await supabase
-    .from("settings")
-    .select("default_followup_days")
-    .eq("user_id", auth.user.id)
-    .maybeSingle();
+  // settings was already fetched above for the send window.
   const followupDays = settings?.default_followup_days ?? 3;
 
   await supabase.from("activities").insert({
@@ -279,6 +310,10 @@ export async function POST(req: NextRequest) {
     nextDue,
     sequenceCompleted: !nextStep,
     taskCreated,
+    // So the UI can say "queued for 1:07pm" instead of implying it already went.
+    scheduledAt: slot.scheduledAt,
+    scheduleReason: slot.reason,
+    timezone: settings?.timezone ?? null,
   });
 }
 

@@ -8,7 +8,11 @@ import { addBusinessDays, format } from "date-fns";
 // waiting in the Ready to Review queue and what happens after a user sends.
 
 export type EnrollmentStatus = "active" | "paused" | "completed" | "stopped";
-export type QueueStatus = "ready" | "sent" | "skipped" | "failed" | "bounced" | "cancelled";
+export type QueueStatus =
+  | "ready"
+  /** Reviewed and handed to the provider, waiting for the send window. */
+  | "approved"
+  | "sent" | "skipped" | "failed" | "bounced" | "cancelled";
 
 export type SequenceStep = {
   id: string;
@@ -32,6 +36,8 @@ export type QueueItem = {
   status: QueueStatus;
   due_date: string;
   sent_at: string | null;
+  /** When the provider will deliver it; null means it went immediately. */
+  scheduled_at: string | null;
   edited: boolean;
   business_name: string;
   campaign_name: string | null;
