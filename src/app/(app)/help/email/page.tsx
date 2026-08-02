@@ -7,7 +7,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  KeyRound, Globe, AtSign, ListOrdered, Mail, ArrowLeft, AlertTriangle, Send,
+  KeyRound, Globe, AtSign, ListOrdered, Mail, ArrowLeft, AlertTriangle, Send, Gauge,
 } from "lucide-react";
 
 // Field-by-field guide for Settings → Email. Written for someone setting this up
@@ -22,8 +22,9 @@ export default function EmailGuidePage() {
         <h1 className="text-2xl font-bold tracking-tight">Email setup — every field explained</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Set up once in this order: connect a Resend account → add a domain → publish DNS →
-          add a sender → send a test → build a sequence. Each step below is one tab in{" "}
-          <Link href="/settings/email" className="text-primary hover:underline">Settings → Email</Link>.
+          add a sender → send a test → build a sequence. Sections 1–4 are the tabs in{" "}
+          <Link href="/settings/email" className="text-primary hover:underline">Settings → Email</Link>;
+          sections 5–6 cover daily sending limits and the everyday routine.
         </p>
       </div>
 
@@ -44,6 +45,12 @@ export default function EmailGuidePage() {
             Replies are <strong className="text-foreground">not</strong> detected automatically —
             there is no inbox connection. When a lead replies, open the lead (or the queue) and click{" "}
             <em>Lead replied — stop</em> so the sequence halts.
+          </p>
+          <p>
+            There is a <strong className="text-foreground">daily sending limit</strong>, and it is a
+            hard stop. It protects your domain&apos;s reputation — see{" "}
+            <a href="#capacity" className="text-primary hover:underline">section 5</a> for how
+            today&apos;s number is worked out and why follow-ups take priority.
           </p>
         </CardContent>
       </Card>
@@ -284,11 +291,123 @@ export default function EmailGuidePage() {
         </CardContent>
       </Card>
 
+      {/* Capacity */}
+      <Card id="capacity" className="scroll-mt-4">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Gauge className="h-4 w-4" /> 5. How many you can send in a day
+          </CardTitle>
+          <CardDescription>
+            The panel at the top of Ready to Review, and the maths behind it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
+            <p className="font-medium">The thing that surprises everyone</p>
+            <p className="text-muted-foreground">
+              Follow-ups compound. With a 3-step sequence, every new lead you add today
+              becomes <strong>three</strong> emails over the next week or two. Add 100 new leads a
+              day and within a week your daily load is ~300 — except the cap stops you, so new
+              leads quietly drop to zero while follow-ups eat the whole budget.
+            </p>
+            <p className="text-muted-foreground">
+              The steady-state rule: <strong>new leads per day ≈ cap ÷ number of steps</strong>.
+              A 100/day cap with a 3-step sequence sustains about <strong>33 new leads a day</strong>,
+              not 100. That is normal and expected — the forecast exists so it never surprises you.
+            </p>
+          </div>
+
+          <Field
+            name="Today's number (e.g. 12 / 30)"
+            what="How many emails have gone out today, against today's cap."
+            how={
+              <>
+                The cap is not fixed — ORMS works it out from whichever limit binds first, and the
+                line underneath always names which one it was.
+              </>
+            }
+          />
+          <Field
+            name="Follow-ups due / New leads possible"
+            what="How the remaining budget splits."
+            how={
+              <>
+                <strong>Follow-ups are always sent first</strong>, because that lead is
+                mid-conversation and waiting on you. New leads get whatever is left. If follow-ups
+                fill the day entirely, you&apos;ll see a warning with a one-click fix.
+              </>
+            }
+          />
+          <Field
+            name="Move today's follow-ups to tomorrow"
+            what="Frees the whole budget for new leads."
+            how={
+              <>
+                Appears when follow-ups have taken the entire day. It doesn&apos;t cancel anything —
+                the steps simply become due tomorrow, and sequences stay active.
+              </>
+            }
+          />
+          <Field
+            name="Next 7 days"
+            what="A forecast of when follow-ups peak."
+            how={
+              <>
+                Amber is follow-ups, blue is new leads. Days marked <em>over</em> have more work
+                queued than the cap allows. Use it to see a heavy day coming before it arrives.
+              </>
+            }
+          />
+
+          <div className="rounded-md border p-3 space-y-2">
+            <p className="font-medium">Warm-up (a new domain sends slowly on purpose)</p>
+            <p className="text-muted-foreground">
+              A domain with no sending history that suddenly sends 100 cold emails looks exactly
+              like spam to Gmail and Outlook. ORMS ramps up instead:
+            </p>
+            <div className="flex flex-wrap gap-1.5 text-xs">
+              {[
+                ["Week 1", "15/day"], ["Week 2", "30/day"], ["Week 3", "50/day"],
+                ["Week 4", "80/day"], ["Week 5+", "100/day"],
+              ].map(([w, n]) => (
+                <span key={w} className="rounded border px-2 py-1">
+                  <strong>{w}</strong> — {n}
+                </span>
+              ))}
+            </div>
+            <p className="text-muted-foreground">
+              The clock starts at your <strong>first real send</strong>, not when the domain was
+              verified — a domain sitting idle warms up nothing. The panel shows which week you are
+              in and the date you reach full speed.
+            </p>
+          </div>
+
+          <div className="rounded-md border p-3 space-y-2">
+            <p className="font-medium">Your provider&apos;s limits</p>
+            <p className="text-muted-foreground">
+              Resend&apos;s free plan allows <strong>100 emails/day</strong> and{" "}
+              <strong>3,000/month</strong>. Every recipient counts separately. If you connect two
+              Resend accounts, each has its own allowance.
+            </p>
+            <p className="text-muted-foreground">
+              Resend has no usage API, so ORMS counts your sends itself. If the monthly allowance is
+              nearly spent, today&apos;s cap shrinks to match.
+            </p>
+          </div>
+
+          <Note icon={<AlertTriangle className="h-4 w-4" />}>
+            <strong>Reaching the cap is a hard stop.</strong> Send will refuse with a message saying
+            how much you&apos;ve used and which limit applied. The email stays in the queue for
+            tomorrow — nothing is lost, and you don&apos;t have to review it again.
+          </Note>
+        </CardContent>
+      </Card>
+
       {/* Daily use */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Mail className="h-4 w-4" /> 5. Using it day to day
+            <Mail className="h-4 w-4" /> 6. Using it day to day
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm text-muted-foreground">
@@ -342,6 +461,26 @@ export default function EmailGuidePage() {
           <Trouble
             problem="Send button says the domain isn't verified"
             fix={<>Only verified domains can send. Finish verification on the Domains tab first.</>}
+          />
+          <Trouble
+            problem="&quot;Today's sending limit is used up&quot;"
+            fix={
+              <>
+                You&apos;ve hit today&apos;s cap. The email stays in the queue — send it tomorrow, no
+                need to review it again. The message names which limit applied (warm-up week,
+                provider limit, or your own target).
+              </>
+            }
+          />
+          <Trouble
+            problem="No new leads are going out, only follow-ups"
+            fix={
+              <>
+                Expected once a sequence is running — follow-ups are served first. Use{" "}
+                <em>Move today&apos;s follow-ups to tomorrow</em> if reaching new leads matters more
+                today, or raise your daily target once warm-up is finished.
+              </>
+            }
           />
         </CardContent>
       </Card>
