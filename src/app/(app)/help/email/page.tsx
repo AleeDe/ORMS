@@ -395,6 +395,18 @@ export default function EmailGuidePage() {
             </p>
           </div>
 
+          <Field
+            name="Daily email target (Settings → Outreach Window)"
+            what="Your own ceiling, if you want one."
+            how={
+              <>
+                Leave it blank and ORMS decides from your warm-up week and provider limit. Setting a
+                value only ever <strong>lowers</strong> the cap — it cannot push you past what your
+                provider allows or what warm-up currently permits.
+              </>
+            }
+          />
+
           <Note icon={<AlertTriangle className="h-4 w-4" />}>
             <strong>Reaching the cap is a hard stop.</strong> Send will refuse with a message saying
             how much you&apos;ve used and which limit applied. The email stays in the queue for
@@ -431,29 +443,73 @@ export default function EmailGuidePage() {
           <div>
             <p className="font-medium text-foreground">Enrolling a whole campaign</p>
             <p>
-              On a campaign, <strong>Add to sequence</strong> enrols everyone at once. It first
-              shows how many actually qualify — a lead needs exactly one usable email address, and
-              in practice a large campaign often yields far fewer than its headline count. Enrolling
-              everything is safe: the daily cap governs what really goes out.
+              On a campaign, <strong>Add to sequence</strong> enrols everyone at once. Before it
+              does, it shows how many actually qualify — a lead needs{" "}
+              <strong>exactly one usable email address</strong>:
+            </p>
+            <ul className="ml-5 mt-1 list-disc space-y-1">
+              <li><strong>No email</strong> — nothing to send to, skipped.</li>
+              <li>
+                <strong>More than one email</strong> — skipped rather than guessing which person to
+                write to. Guessing wrong on cold outreach costs more than skipping the lead.
+              </li>
+              <li><strong>Invalid address</strong> — skipped.</li>
+              <li><strong>Already on this sequence</strong> — not enrolled twice.</li>
+            </ul>
+            <p className="mt-1">
+              Expect the qualifying number to be well below the campaign size — imported lists
+              routinely have an address for only half their leads. The dialog also translates it
+              into time: total emails, new leads per day after follow-ups, and working days to get
+              through the campaign.
+            </p>
+            <p className="mt-1">
+              Enrolling everything at once is safe — the daily cap governs what actually goes out,
+              so nothing floods.
             </p>
           </div>
           <div>
             <p className="font-medium text-foreground">Send doesn&apos;t always mean now</p>
             <p>
-              With a send window set (Settings → Outreach Window), clicking Send{" "}
-              <strong>approves</strong> the email and hands it to Resend for delivery inside that
-              window, spread out rather than sent in a burst. The <strong>Scheduled</strong> tab
-              shows what is waiting. Turn the window off to send immediately.
+              Settings → Outreach Window has a switch called{" "}
+              <strong>&quot;Deliver sequence emails inside this window&quot;</strong>. With it on,
+              clicking Send <strong>approves</strong> the email rather than sending it — it goes to
+              Resend with a delivery time inside your window, spread out instead of arriving as one
+              burst. Review at 9am with a 1pm–2pm window and the emails land at 1pm.
+            </p>
+            <p>
+              Approve inside the window and it goes immediately; approve after it closes and it
+              lands at the start of tomorrow&apos;s. The <strong>Scheduled</strong> tab shows what is
+              waiting, each row marked with its delivery time. Switch it off to send the moment you
+              click.
             </p>
           </div>
           <div>
             <p className="font-medium text-foreground">Checking what works</p>
             <p>
-              <Link href="/analytics" className="text-primary hover:underline">Analytics</Link> shows
-              reply rate per step and by hour of day. If a step has had a fair run and earned no
-              replies, removing it frees capacity — with a 3-step sequence that&apos;s roughly 50%
-              more new leads a day. Rates from tiny samples are marked &quot;too few&quot; rather
-              than presented as fact.
+              <Link href="/analytics" className="text-primary hover:underline">Analytics</Link> →{" "}
+              <strong>Email sequences</strong> answers the question that actually matters: which
+              step is earning its place.
+            </p>
+            <ul className="ml-5 mt-1 list-disc space-y-1">
+              <li>
+                <strong>Which step earns its place</strong> — reply rate per step. A reply counts
+                for the last step sent before it arrived, since that&apos;s the message the lead was
+                looking at when they answered.
+              </li>
+              <li>
+                <strong>When replies actually come</strong> — reply rate by hour, from every logged
+                send (not just sequences), so it is useful before you send a single sequence email.
+                Use it to move your outreach window onto the hours that work.
+              </li>
+            </ul>
+            <p className="mt-1">
+              If a step has had a fair run and earned no replies, the panel says so. Removing it is
+              worth real volume: throughput is <strong>cap ÷ steps</strong>, so dropping one step
+              from a 3-step sequence is roughly <strong>50% more new leads a day</strong>.
+            </p>
+            <p className="mt-1">
+              Rates from thin samples show as <em>&quot;too few&quot;</em> instead of a number —
+              one reply from three emails is not a 33% reply rate in any useful sense.
             </p>
           </div>
           <div>
