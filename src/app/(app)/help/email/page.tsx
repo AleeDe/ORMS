@@ -429,6 +429,34 @@ export default function EmailGuidePage() {
             </p>
           </div>
           <div>
+            <p className="font-medium text-foreground">Enrolling a whole campaign</p>
+            <p>
+              On a campaign, <strong>Add to sequence</strong> enrols everyone at once. It first
+              shows how many actually qualify — a lead needs exactly one usable email address, and
+              in practice a large campaign often yields far fewer than its headline count. Enrolling
+              everything is safe: the daily cap governs what really goes out.
+            </p>
+          </div>
+          <div>
+            <p className="font-medium text-foreground">Send doesn&apos;t always mean now</p>
+            <p>
+              With a send window set (Settings → Outreach Window), clicking Send{" "}
+              <strong>approves</strong> the email and hands it to Resend for delivery inside that
+              window, spread out rather than sent in a burst. The <strong>Scheduled</strong> tab
+              shows what is waiting. Turn the window off to send immediately.
+            </p>
+          </div>
+          <div>
+            <p className="font-medium text-foreground">Checking what works</p>
+            <p>
+              <Link href="/analytics" className="text-primary hover:underline">Analytics</Link> shows
+              reply rate per step and by hour of day. If a step has had a fair run and earned no
+              replies, removing it frees capacity — with a 3-step sequence that&apos;s roughly 50%
+              more new leads a day. Rates from tiny samples are marked &quot;too few&quot; rather
+              than presented as fact.
+            </p>
+          </div>
+          <div>
             <p className="font-medium text-foreground">After you send</p>
             <p>
               ORMS logs it on the lead&apos;s timeline, bumps the touch count, suggests a status
