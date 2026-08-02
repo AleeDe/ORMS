@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { STATUS_LABELS, STATUS_ORDER } from "@/lib/quick-log";
 import { statusClass } from "@/lib/badge-styles";
 import { Button } from "@/components/ui/button";
+import { EnrollCampaignDialog } from "@/components/enroll-campaign-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -131,10 +132,15 @@ export default function CampaignDetailPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">{campaign?.name ?? "…"}</h1>
-        {campaign?.description && (
-          <p className="text-sm text-muted-foreground">{campaign.description}</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">{campaign?.name ?? "…"}</h1>
+          {campaign?.description && (
+            <p className="text-sm text-muted-foreground">{campaign.description}</p>
+          )}
+        </div>
+        {campaign && (
+          <EnrollCampaignDialog campaignId={campaign.id} campaignName={campaign.name} />
         )}
       </div>
 
