@@ -8,7 +8,7 @@ import { todayStr } from "@/lib/dates";
 import {
   materializeDue, skipQueueItem, pauseEnrollment, stopForLead, type QueueItem,
 } from "@/lib/sequences";
-import { formatSlot } from "@/lib/send-window";
+import { formatSlot, localInputToUtc, isoToLocalInput } from "@/lib/send-window";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
 import {
-  Mail, Send, SkipForward, PauseCircle, MessageSquareReply, Pencil, X, HelpCircle,
+  Mail, Send, SkipForward, PauseCircle, MessageSquareReply, Pencil, X, HelpCircle, Clock,
 } from "lucide-react";
 import { toneClass } from "@/lib/badge-styles";
 import { CapacityPanel } from "@/components/capacity-panel";
@@ -30,6 +30,8 @@ export default function EmailsPage() {
   const today = todayStr();
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ subject: string; body: string }>({ subject: "", body: "" });
+  // Per-row "send at" overrides, keyed by queue id. Empty means "use the window".
+  const [sendAt, setSendAt] = useState<Record<string, string>>({});
 
   // Promote anything that has come due. Idempotent, so running it on every load
   // is how the queue stays current without a cron.
@@ -78,10 +80,16 @@ export default function EmailsPage() {
     mutationFn: async (item: QueueItem) => {
       const payload =
         editing === item.id ? { subject: draft.subject, body: draft.body } : {};
+      // A picked time overrides the outreach window for this one email.
+      const chosen = sendAt[item.id];
       const res = await fetch("/api/email/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ queueItemId: item.id, ...payload }),
+        body: JSON.stringify({
+          queueItemId: item.id,
+          ...payload,
+          ...(chosen ? { sendAt: localInputToUtc(chosen, sendTimezone) } : {}),
+        }),
       });
       const raw = await res.text();
       let json: { error?: string; capReached?: boolean; sequenceCompleted?: boolean; nextDue?: string | null };
@@ -117,6 +125,38 @@ export default function EmailsPage() {
     onError: (e) =>
       // The cap message is long and actionable, so give it time to be read.
       toast.error(e.message, { duration: /limit is used up/.test(e.message) ? 8000 : 4000 }),
+  });
+
+  // Approved emails are still held by Resend, so their delivery time can be
+  // moved (or the send pulled back entirely) right up until it goes out.
+  const reschedule = useMutation({
+    mutationFn: async ({ item, cancel }: { item: QueueItem; cancel?: boolean }) => {
+      const chosen = sendAt[item.id];
+      if (!cancel && !chosen) throw new Error("Pick a new time first.");
+      const res = await fetch("/api/email/reschedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          queueItemId: item.id,
+          ...(cancel
+            ? { cancel: true }
+            : { sendAt: localInputToUtc(chosen, sendTimezone) }),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Could not change this email");
+      return { ...json, cancel } as { scheduledAt?: string; cancel?: boolean };
+    },
+    onSuccess: (r) => {
+      toast.success(
+        r.cancel
+          ? "Send cancelled — the email is back in Ready to Review"
+          : `Rescheduled — delivers ${formatSlot(r.scheduledAt!, sendTimezone)}`
+      );
+      invalidateAll();
+      queryClient.invalidateQueries({ queryKey: ["sending-capacity"] });
+    },
+    onError: (e) => toast.error(e.message),
   });
 
   const skip = useMutation({
@@ -259,8 +299,39 @@ export default function EmailsPage() {
                       onClick={() => send.mutate(item)}
                       disabled={send.isPending}
                     >
-                      <Send className="h-4 w-4 mr-1" /> Send
+                      <Send className="h-4 w-4 mr-1" />
+                      {sendAt[item.id] ? "Schedule" : "Send"}
                     </Button>
+                    {/* Optional per-email time. Left empty, the outreach window
+                        decides — which is still the right default for most. */}
+                    <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="h-3.5 w-3.5" />
+                      <Input
+                        type="datetime-local"
+                        className="h-8 w-52 text-xs"
+                        value={sendAt[item.id] ?? ""}
+                        onChange={(e) =>
+                          setSendAt((s) => ({ ...s, [item.id]: e.target.value }))
+                        }
+                        title="Leave empty to use your outreach window"
+                      />
+                      {sendAt[item.id] && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-1"
+                          onClick={() =>
+                            setSendAt((s) => {
+                              const next = { ...s };
+                              delete next[item.id];
+                              return next;
+                            })
+                          }
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </label>
                     {isEditing ? (
                       <Button size="sm" variant="outline" onClick={() => setEditing(null)}>
                         <X className="h-4 w-4 mr-1" /> Cancel edit
@@ -282,6 +353,45 @@ export default function EmailsPage() {
                       onClick={() => markReplied.mutate(item)}
                     >
                       <MessageSquareReply className="h-4 w-4 mr-1" /> Lead replied — stop
+                    </Button>
+                  </div>
+                )}
+
+                {/* Scheduled but not delivered: Resend still holds it, so the
+                    time can be moved or the send pulled back. */}
+                {item.status === "approved" && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="h-3.5 w-3.5" /> Deliver at
+                      <Input
+                        type="datetime-local"
+                        className="h-8 w-52 text-xs"
+                        value={
+                          sendAt[item.id] ??
+                          (item.scheduled_at
+                            ? isoToLocalInput(item.scheduled_at, sendTimezone)
+                            : "")
+                        }
+                        onChange={(e) =>
+                          setSendAt((s) => ({ ...s, [item.id]: e.target.value }))
+                        }
+                      />
+                    </label>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!sendAt[item.id] || reschedule.isPending}
+                      onClick={() => reschedule.mutate({ item })}
+                    >
+                      Reschedule
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={reschedule.isPending}
+                      onClick={() => reschedule.mutate({ item, cancel: true })}
+                    >
+                      <X className="h-4 w-4 mr-1" /> Cancel send
                     </Button>
                   </div>
                 )}
@@ -342,7 +452,7 @@ export default function EmailsPage() {
           {scheduled.length > 0 && (
             <p className="mb-3 text-sm text-muted-foreground">
               Approved and waiting for your send window. Resend delivers these automatically —
-              nothing more to do.
+              nothing more to do. You can still move the time or cancel a send until it goes out.
             </p>
           )}
           {renderList(scheduled, "Nothing waiting to be delivered.", false)}

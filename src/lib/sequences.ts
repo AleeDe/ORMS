@@ -38,6 +38,8 @@ export type QueueItem = {
   sent_at: string | null;
   /** When the provider will deliver it; null means it went immediately. */
   scheduled_at: string | null;
+  /** A time the user picked for this one email, overriding the outreach window. */
+  scheduled_at_override: string | null;
   edited: boolean;
   business_name: string;
   campaign_name: string | null;

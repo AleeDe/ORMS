@@ -122,6 +122,35 @@ export function nextSendSlot(
   return { scheduledAt: slot.toISOString(), reason: "tomorrow" };
 }
 
+/**
+ * Converts a `<input type="datetime-local">` value ("2026-08-09T15:30") to a real
+ * instant, reading it as wall-clock time in `timeZone` rather than in whatever
+ * zone the browser happens to be in. Without this, a user in Karachi picking
+ * "3pm" while their window is defined in London would silently schedule 3pm
+ * Karachi time.
+ */
+export function localInputToUtc(value: string, timeZone: string): string {
+  const [datePart, timePart = "00:00"] = value.split("T");
+  const [y, mo, d] = datePart.split("-").map(Number);
+  const [hh, mm] = timePart.split(":").map(Number);
+  return zonedTimeToUtc(y, mo - 1, d, hh, mm, timeZone).toISOString();
+}
+
+/** The inverse: an instant rendered as a datetime-local value in `timeZone`. */
+export function isoToLocalInput(iso: string, timeZone: string): string {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+  const p = dtf.formatToParts(new Date(iso));
+  const get = (t: string) => p.find((x) => x.type === t)?.value ?? "00";
+  // en-CA gives ISO-ish parts, but hour can come back as "24" at midnight.
+  const hour = get("hour") === "24" ? "00" : get("hour");
+  return `${get("year")}-${get("month")}-${get("day")}T${hour}:${get("minute")}`;
+}
+
 /** Human-readable delivery time in the user's own timezone. */
 export function formatSlot(iso: string, timeZone: string): string {
   return new Date(iso).toLocaleString(undefined, {

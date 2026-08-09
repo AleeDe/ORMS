@@ -15,10 +15,12 @@ export async function POST(req: NextRequest) {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const { queueItemId, subject, body } = (await req.json()) as {
+  const { queueItemId, subject, body, sendAt } = (await req.json()) as {
     queueItemId?: string;
     subject?: string;
     body?: string;
+    /** ISO delivery time chosen for this one email; overrides the window. */
+    sendAt?: string;
   };
   if (!queueItemId) {
     return NextResponse.json({ error: "queueItemId is required" }, { status: 400 });
@@ -104,17 +106,44 @@ export async function POST(req: NextRequest) {
     .eq("status", "approved")
     .gte("scheduled_at", new Date().toISOString());
 
-  const slot = settings
-    ? nextSendSlot(
-        {
-          outreach_start_time: settings.outreach_start_time,
-          outreach_end_time: settings.outreach_end_time,
-          timezone: settings.timezone,
-          schedule_in_window: settings.schedule_in_window ?? true,
-        },
-        pendingScheduled ?? 0
-      )
-    : { scheduledAt: null, reason: "immediate" as const };
+  // A per-email override wins over the outreach window — the user picked this
+  // time deliberately for this one lead. Everything else still spreads across
+  // the window, so one override cannot bunch the rest into a burst.
+  const override = sendAt?.trim() || item.scheduled_at_override || null;
+
+  let slot: { scheduledAt: string | null; reason: "immediate" | "later-today" | "tomorrow" };
+  if (override) {
+    const when = new Date(override);
+    if (Number.isNaN(when.getTime())) {
+      return NextResponse.json({ error: "That send time is not a valid date." }, { status: 400 });
+    }
+    // Resend refuses anything beyond 30 days with a 422; catch it here so the
+    // user gets a sentence instead of a provider error.
+    const maxAhead = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    if (when.getTime() > maxAhead) {
+      return NextResponse.json(
+        { error: "Resend can only schedule up to 30 days ahead. Pick an earlier time." },
+        { status: 400 }
+      );
+    }
+    // A time already past means "send now" rather than an error.
+    slot =
+      when.getTime() <= Date.now()
+        ? { scheduledAt: null, reason: "immediate" }
+        : { scheduledAt: when.toISOString(), reason: "later-today" };
+  } else if (settings) {
+    slot = nextSendSlot(
+      {
+        outreach_start_time: settings.outreach_start_time,
+        outreach_end_time: settings.outreach_end_time,
+        timezone: settings.timezone,
+        schedule_in_window: settings.schedule_in_window ?? true,
+      },
+      pendingScheduled ?? 0
+    );
+  } else {
+    slot = { scheduledAt: null, reason: "immediate" };
+  }
 
   const finalSubject = subject?.trim() || item.subject;
   const finalBodyBase = body?.trim() || item.body;
@@ -189,6 +218,7 @@ export async function POST(req: NextRequest) {
       status: slot.scheduledAt ? "approved" : "sent",
       approved_at: new Date().toISOString(),
       scheduled_at: slot.scheduledAt,
+      scheduled_at_override: override,
       sent_at: slot.scheduledAt ? null : new Date().toISOString(),
       resend_message_id: messageId,
       subject: finalSubject,

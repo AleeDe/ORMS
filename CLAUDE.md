@@ -126,6 +126,11 @@ an empty, healthy-looking app. Confirm the owner before concluding anything.
 - Sends are spread across the outreach window rather than fired at once; a burst of
   identical timestamps reads as automation and a young domain cannot afford that.
   Warm-up is per **domain** and starts at the first real send, not at verification.
+- A scheduled email is **not final**. Verified against the live API:
+  `PATCH /emails/:id` changes `scheduled_at` (422 beyond 30 days) and
+  `POST /emails/:id/cancel` pulls it back. Both answer 404 once delivered, which
+  means "too late", not a failure. `resend.com/docs` returns 403 to WebFetch —
+  probe the API with a real key instead of trusting docs or memory.
 
 ## OPEN TASKS (requested 2026-08-05)
 
@@ -133,7 +138,8 @@ Five gaps the user reported after the queue was unblocked. Investigated and
 root-caused already — the findings below are verified against the live DB, so
 trust them and skip re-diagnosis. Tick items off here as they land.
 
-**Status: 1, 2, 3 and 5 landed 2026-08-09. Only #4 (per-email send time) is left.**
+**Status: all five landed 2026-08-09.** #0 below (a related bug found on the way)
+is still open.
 
 ### 0. Related bug found on the way — `lead_filter_facts` cannot be embedded — [ ]
 `lead_filter_facts` is a plain view with no FK metadata, so PostgREST refuses
@@ -175,21 +181,29 @@ Your Doctor A") pile up forever. Add delete on `SequenceCard`.
 sequence that has enrollments must not cascade away history. If it would, block
 the delete with a clear message and offer archiving instead.
 
-### 4. Per-email send time — [ ]
-The user asked "send timing kis se link hai?". Today it is **only** global:
-`settings.outreach_start_time`/`end_time`/`timezone` + `schedule_in_window`, fed
-through `nextSendSlot()` in [lib/send-window.ts](src/lib/send-window.ts) at the
-moment of approval. There is no per-email override anywhere.
+### 4. Per-email send time — [x] done 2026-08-09
+Timing used to be **only** global: `settings.outreach_start_time`/`end_time`/
+`timezone` + `schedule_in_window`, fed through `nextSendSlot()` at approval.
 
-Constraints to respect:
-- `lib/resend.ts` has **no cancel/reschedule helper** — `sendEmail` only creates.
-  Once handed to Resend with a `scheduled_at`, changing the time means calling
-  Resend's cancel/update endpoint, which must be added there first.
-- Easiest correct shape: let the user pick a time *before* approving (a per-row
-  override that feeds `nextSendSlot`), rather than editing an already-approved
-  email. Store it on `email_queue` (e.g. `scheduled_at_override timestamptz`).
-- Keep the spread-out behaviour — do not let overrides bunch sends into one
-  instant; see the burst warning in the Resend section.
+Now `email_queue.scheduled_at_override` (migration `20260809000002`) holds an
+optional per-email time. Null keeps the old behaviour, so the window still
+decides for everything the user does not deliberately re-time — overrides cannot
+bunch the rest into a burst.
+
+**Resend can do more than was assumed.** Probed against the live API:
+- `PATCH /emails/:id` accepts a new `scheduled_at` (rejects >30 days with a 422)
+- `POST /emails/:id/cancel` exists
+
+So an *already approved* email can also be moved or pulled back, not just
+re-timed before approval. `lib/resend.ts` gained `rescheduleEmail()` and
+`cancelEmail()`; `/api/email/reschedule` uses them, and cancelling returns the
+row to `ready` and deletes its `email_send_log` entry so it stops consuming
+capacity it never used.
+
+Times are picked as wall-clock in the user's outreach timezone and converted via
+`localInputToUtc()` / `isoToLocalInput()` in `lib/send-window.ts` — a Karachi
+user picking 3pm against a London window must not silently get 3pm Karachi.
+Both are DST-tested.
 
 ### 5. Campaign detail needs the Leads-page filters — [x] done 2026-08-09
 The campaign detail table only filters by the 8-state status

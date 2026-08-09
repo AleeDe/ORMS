@@ -132,6 +132,29 @@ export async function sendEmail(apiKey: string, input: SendEmailInput) {
   });
 }
 
+/**
+ * Moves an already-scheduled email to a new delivery time.
+ *
+ * Verified against the live API: `PATCH /emails/:id` accepts `scheduled_at` and
+ * rejects anything more than **30 days** out with a 422. Only works while the
+ * email is still scheduled — once delivered there is nothing left to move.
+ */
+export function rescheduleEmail(apiKey: string, emailId: string, scheduledAt: string) {
+  return call<{ id: string }>(apiKey, `/emails/${emailId}`, {
+    method: "PATCH",
+    body: { scheduled_at: scheduledAt },
+  });
+}
+
+/**
+ * Cancels a scheduled email so it never goes out. Resend answers 404 once the
+ * message has already been delivered, which callers should treat as "too late"
+ * rather than as an error worth surfacing raw.
+ */
+export function cancelEmail(apiKey: string, emailId: string) {
+  return call<{ id: string }>(apiKey, `/emails/${emailId}/cancel`, { method: "POST" });
+}
+
 /** "Display Name <local@domain>" — the form Resend expects for `from`. */
 export function formatFrom(displayName: string, address: string) {
   return displayName ? `${displayName} <${address}>` : address;
