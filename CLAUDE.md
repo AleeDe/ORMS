@@ -127,13 +127,25 @@ an empty, healthy-looking app. Confirm the owner before concluding anything.
   identical timestamps reads as automation and a young domain cannot afford that.
   Warm-up is per **domain** and starts at the first real send, not at verification.
 
-## OPEN TASKS (requested 2026-08-05, not yet started)
+## OPEN TASKS (requested 2026-08-05)
 
 Five gaps the user reported after the queue was unblocked. Investigated and
 root-caused already — the findings below are verified against the live DB, so
 trust them and skip re-diagnosis. Tick items off here as they land.
 
-### 1. Scheduled tab shows no delivery time — [ ]
+**Status: 1, 2, 3 and 5 landed 2026-08-09. Only #4 (per-email send time) is left.**
+
+### 0. Related bug found on the way — `lead_filter_facts` cannot be embedded — [ ]
+`lead_filter_facts` is a plain view with no FK metadata, so PostgREST refuses
+`leads?select=...,lff:lead_filter_facts!inner(lead_id)` with
+`PGRST200 ... no relationship found`. **This means the Leads page's own "Has a
+person", "Has personal number" and first-touch filters are broken today** — they
+error instead of filtering ([leads/page.tsx](src/app/(app)/leads/page.tsx),
+`buildQuery`). `lib/lead-filters.ts` works around it by querying the view
+directly and intersecting ids; the Leads page should be moved onto that shared
+module rather than keeping its own broken copy.
+
+### 1. Scheduled tab shows no delivery time — [x] done 2026-08-09
 The UI prints "Due 2026-08-03" instead of when the email actually goes out.
 **Not a UI bug.** `email_queue.scheduled_at` is correctly populated (verified:
 09:00, 10:00, 10:20 UTC, properly spread across the window). The problem is
@@ -147,14 +159,14 @@ Fix: a migration that re-runs `create or replace view email_queue_detail`
 `42703 column does not exist`. The page already has the render logic and
 `formatSlot()`, so no client changes should be needed.
 
-### 2. Campaigns should show which sequence a lead is already in — [ ]
+### 2. Campaigns should show which sequence a lead is already in — [x] done 2026-08-09
 Currently you cannot tell from the campaign screens that leads are mid-sequence,
 so it is easy to enrol them twice. Surface the enrolment on the campaign detail
 table (and ideally a count on the campaign card): sequence name + status +
 current step. Data is in `email_enrollments` (`campaign_id`, `sequence_id`,
 `status`, `current_step`), joinable to `email_sequences.name`.
 
-### 3. No way to delete a sequence — [ ]
+### 3. No way to delete a sequence — [x] done 2026-08-09
 `email_senders` and `email_sequence_steps` both have delete buttons in
 [settings/email/page.tsx](src/app/(app)/settings/email/page.tsx); sequences only
 have an is_active toggle, so dead test sequences ("sample", "Review", "Review
@@ -179,7 +191,7 @@ Constraints to respect:
 - Keep the spread-out behaviour — do not let overrides bunch sends into one
   instant; see the burst warning in the Resend section.
 
-### 5. Campaign detail needs the Leads-page filters — [ ]
+### 5. Campaign detail needs the Leads-page filters — [x] done 2026-08-09
 The campaign detail table only filters by the 8-state status
 ([campaigns/[id]/page.tsx:165](src/app/(app)/campaigns/[id]/page.tsx#L165)),
 while `/leads` has search + email/website/phone/people/campaign/custom-field

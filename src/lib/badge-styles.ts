@@ -35,6 +35,16 @@ const STATUS_TONE: Record<string, Tone> = {
 export const statusTone = (status: string): Tone => STATUS_TONE[status] ?? "slate";
 export const statusClass = (status: string) => toneClass(statusTone(status));
 
+// Email enrollment status → tone. Shared so a "paused" sequence reads the same
+// on Lead Detail as it does on the campaign table.
+const ENROLLMENT_TONE: Record<string, Tone> = {
+  active: "green",
+  paused: "amber",
+  stopped: "red",
+  completed: "slate",
+};
+export const enrollmentTone = (status: string): Tone => ENROLLMENT_TONE[status] ?? "slate";
+
 // Task priority → tone
 const PRIORITY_TONE: Record<string, Tone> = {
   high: "red",

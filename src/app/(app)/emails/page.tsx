@@ -45,6 +45,16 @@ export default function EmailsPage() {
     }
   }, [materialized, queryClient]);
 
+  // Delivery times are stamped in UTC but mean nothing to the user unless shown
+  // in the zone their outreach window is defined in.
+  const { data: sendTimezone = "UTC" } = useQuery({
+    queryKey: ["send-timezone"],
+    queryFn: async () => {
+      const { data } = await supabase.from("settings").select("timezone").maybeSingle();
+      return data?.timezone || "UTC";
+    },
+  });
+
   const { data: items, isLoading } = useQuery({
     queryKey: ["email-queue"],
     queryFn: async () => {
@@ -204,11 +214,12 @@ export default function EmailsPage() {
                       {item.campaign_name ? ` · ${item.campaign_name}` : ""}
                     </p>
                   </div>
+                  {/* Shown in the outreach timezone, not the browser's: the user
+                      set the window in their own zone, so "delivers 2pm" must
+                      mean 2pm there. */}
                   <span className="text-xs text-muted-foreground whitespace-nowrap">
                     {item.status === "approved" && item.scheduled_at
-                      ? `Delivers ${new Date(item.scheduled_at).toLocaleString(undefined, {
-                          weekday: "short", hour: "2-digit", minute: "2-digit",
-                        })}`
+                      ? `Delivers ${formatSlot(item.scheduled_at, sendTimezone)}`
                       : item.status === "sent" && item.sent_at
                         ? `Sent ${item.sent_at.slice(0, 10)}`
                         : `Due ${item.due_date}`}

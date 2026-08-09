@@ -345,6 +345,36 @@ export default function EmailSettingsPage() {
     onError: (e) => toast.error(e.message),
   });
 
+  // email_enrollments.sequence_id is ON DELETE CASCADE, so deleting a sequence
+  // that has ever been used would silently erase that enrolment history (and the
+  // queue rows hanging off it). Only genuinely unused sequences may be deleted;
+  // anything with history is deactivated instead, which is what the user
+  // actually wants for a finished campaign.
+  const deleteSequence = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("email_sequences").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Sequence deleted");
+      qc.invalidateQueries({ queryKey: ["email-sequences"] });
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const requestDeleteSequence = (seq: Sequence, enrollmentCount: number) => {
+    if (enrollmentCount > 0) {
+      toast.error(
+        `"${seq.name}" has ${enrollmentCount} enrolled lead${enrollmentCount === 1 ? "" : "s"}. ` +
+          `Deleting it would erase that history — turn Active off instead to retire it.`,
+        { duration: 7000 }
+      );
+      return;
+    }
+    if (!confirm(`Delete "${seq.name}"? It has never been used, so nothing is lost.`)) return;
+    deleteSequence.mutate(seq.id);
+  };
+
   const verifiedDomains = (domains ?? []).filter((d) => d.status === "verified");
 
   return (
@@ -812,6 +842,7 @@ export default function EmailSettingsPage() {
               open={openSeq === seq.id}
               onToggle={() => setOpenSeq(openSeq === seq.id ? null : seq.id)}
               onUpdate={(patch) => updateSequence.mutate({ id: seq.id, patch })}
+              onDelete={(count) => requestDeleteSequence(seq, count)}
             />
           ))}
           {!sequences?.length && (
@@ -832,13 +863,15 @@ export default function EmailSettingsPage() {
 // One sequence with its steps. Steps are business-day delays measured from the
 // previous step's send, so a paused or late send shifts everything after it.
 function SequenceCard({
-  sequence, senders, open, onToggle, onUpdate,
+  sequence, senders, open, onToggle, onUpdate, onDelete,
 }: {
   sequence: Sequence;
   senders: Sender[];
   open: boolean;
   onToggle: () => void;
   onUpdate: (patch: Partial<Sequence>) => void;
+  /** Receives the enrolment count so the parent can refuse a destructive delete. */
+  onDelete?: (enrollmentCount: number) => void;
 }) {
   const supabase = createClient();
   const qc = useQueryClient();
@@ -890,16 +923,50 @@ function SequenceCard({
     onError: (e) => toast.error(e.message),
   });
 
+  // How many leads have ever been enrolled. Shown on the card so you can tell a
+  // dead test sequence from one carrying real history, and used to gate delete.
+  const { data: enrollmentCount } = useQuery({
+    queryKey: ["sequence-enrollment-count", sequence.id],
+    queryFn: async () => {
+      const { count } = await supabase
+        .from("email_enrollments")
+        .select("id", { count: "exact", head: true })
+        .eq("sequence_id", sequence.id);
+      return count ?? 0;
+    },
+  });
+
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle className="text-base">
           {sequence.name}
           {!sequence.is_active && <Badge variant="outline" className="ml-2">Inactive</Badge>}
+          {!!enrollmentCount && (
+            <Badge variant="secondary" className="ml-2 font-normal">
+              {enrollmentCount} enrolled
+            </Badge>
+          )}
         </CardTitle>
-        <Button size="sm" variant="outline" onClick={onToggle}>
-          {open ? "Close" : "Edit steps"}
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={onToggle}>
+            {open ? "Close" : "Edit steps"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-destructive hover:text-destructive"
+            disabled={enrollmentCount === undefined || onDelete === undefined}
+            onClick={() => onDelete?.(enrollmentCount ?? 0)}
+            title={
+              enrollmentCount
+                ? "This sequence has enrolment history"
+                : "Delete this sequence"
+            }
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       </CardHeader>
       {open && (
         <CardContent className="space-y-4">

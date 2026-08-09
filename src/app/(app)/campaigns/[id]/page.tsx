@@ -5,8 +5,14 @@ import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
 import { STATUS_LABELS, STATUS_ORDER } from "@/lib/quick-log";
-import { statusClass } from "@/lib/badge-styles";
+import { statusClass, toneClass, enrollmentTone } from "@/lib/badge-styles";
+import { ROLE_OPTIONS } from "@/lib/people";
+import {
+  EMPTY_LEAD_FILTERS, hasActiveLeadFilters, resolveLeadFilterIds, type LeadFilters,
+} from "@/lib/lead-filters";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { EnrollCampaignDialog } from "@/components/enroll-campaign-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -42,6 +48,22 @@ export default function CampaignDetailPage({
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(0);
+  const [leadFilters, setLeadFilters] = useState<LeadFilters>(EMPTY_LEAD_FILTERS);
+
+  const patchLeadFilters = (patch: Partial<LeadFilters>) => {
+    setLeadFilters((f) => ({ ...f, ...patch }));
+    setPage(0);
+  };
+  const filtersActive = hasActiveLeadFilters(leadFilters);
+
+  // The lead-side filters (search, email/website/phone/people/custom field) work
+  // on `leads`, but this page paginates `campaign_leads`. Resolve them to ids and
+  // constrain by those — see lib/lead-filters.ts for the anti-join rules.
+  const { data: filteredLeadIds } = useQuery({
+    queryKey: ["campaign-lead-filter-ids", id, leadFilters],
+    enabled: filtersActive,
+    queryFn: () => resolveLeadFilterIds(supabase, leadFilters),
+  });
 
   const { data: campaign } = useQuery({
     queryKey: ["campaign", id],
@@ -54,7 +76,9 @@ export default function CampaignDetailPage({
   });
 
   const { data: leadsPage, isLoading } = useQuery({
-    queryKey: ["campaign-leads", id, statusFilter, page],
+    queryKey: ["campaign-leads", id, statusFilter, page, leadFilters, filteredLeadIds],
+    // Wait for the id resolution rather than flashing unfiltered rows first.
+    enabled: !filtersActive || Array.isArray(filteredLeadIds),
     queryFn: async () => {
       let q = supabase
         .from("campaign_leads")
@@ -64,6 +88,7 @@ export default function CampaignDetailPage({
         )
         .eq("campaign_id", id);
       if (statusFilter !== "all") q = q.eq("status", statusFilter);
+      if (filtersActive) q = q.in("lead_id", filteredLeadIds ?? []);
       const { data, count, error } = await q
         .order("added_at", { ascending: false })
         .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
@@ -72,6 +97,40 @@ export default function CampaignDetailPage({
     },
   });
   const rows = leadsPage?.rows;
+
+  // Which sequence each visible lead is already on. Fetched for the current page
+  // rather than embedded in the query above, because a lead can hold several
+  // enrollments and an embed would multiply the campaign_leads rows.
+  //
+  // Without this you cannot tell from the campaign screen that leads are already
+  // mid-sequence, which makes it easy to enrol the same people twice.
+  const leadIds = (leadsPage?.rows ?? []).map((r) => r.leads.id);
+  const { data: enrollmentsByLead } = useQuery({
+    queryKey: ["campaign-lead-enrollments", id, leadIds],
+    enabled: leadIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("email_enrollments")
+        .select("lead_id, status, current_step, email_sequences(name)")
+        .in("lead_id", leadIds)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+
+      const rows = data as unknown as {
+        lead_id: string; status: string; current_step: number;
+        email_sequences: { name: string } | null;
+      }[];
+
+      // Live enrollments first, so a lead that finished one sequence and is now
+      // running another shows the one that still matters.
+      const rank = (s: string) => (s === "active" ? 0 : s === "paused" ? 1 : 2);
+      const byLead = new Map<string, (typeof rows)[number]>();
+      for (const r of [...rows].sort((a, b) => rank(a.status) - rank(b.status))) {
+        if (!byLead.has(r.lead_id)) byLead.set(r.lead_id, r);
+      }
+      return byLead;
+    },
+  });
 
   const { data: statCounts } = useQuery({
     queryKey: ["campaign-stats", id],
@@ -161,6 +220,95 @@ export default function CampaignDetailPage({
         ))}
       </div>
 
+      {/* Same filter vocabulary as /leads, so a campaign can be sliced the same
+          way. The lead-side ones resolve through lib/lead-filters.ts. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          placeholder="Search name, number, email, any field…"
+          className="w-72"
+          value={leadFilters.search}
+          onChange={(e) => patchLeadFilters({ search: e.target.value })}
+        />
+        <Select
+          value={leadFilters.emailFilter}
+          onValueChange={(v) => patchLeadFilters({ emailFilter: v })}
+        >
+          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Email: any</SelectItem>
+            <SelectItem value="valid">Email: valid syntax</SelectItem>
+            <SelectItem value="invalid">Email: invalid syntax</SelectItem>
+            <SelectItem value="has">Email: has one</SelectItem>
+            <SelectItem value="none">Email: missing</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={leadFilters.websiteFilter}
+          onValueChange={(v) => patchLeadFilters({ websiteFilter: v })}
+        >
+          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Website: any</SelectItem>
+            <SelectItem value="has">Website: has one</SelectItem>
+            <SelectItem value="none">Website: missing</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={leadFilters.phoneFilter}
+          onValueChange={(v) => patchLeadFilters({ phoneFilter: v })}
+        >
+          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Phone: any</SelectItem>
+            <SelectItem value="has">Phone: has one</SelectItem>
+            <SelectItem value="none">Phone: missing</SelectItem>
+            <SelectItem value="personal">Has personal number</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={leadFilters.personFilter}
+          onValueChange={(v) => patchLeadFilters({ personFilter: v })}
+        >
+          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">People: any</SelectItem>
+            <SelectItem value="has">Has a person</SelectItem>
+            {ROLE_OPTIONS.map((r) => (
+              <SelectItem key={r} value={r}>Role: {r}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={leadFilters.fieldKey}
+          onValueChange={(v) => patchLeadFilters({ fieldKey: v })}
+        >
+          <SelectTrigger className="w-44"><SelectValue placeholder="Field…" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Field: any</SelectItem>
+            {dynamicColumns.map((k) => (
+              <SelectItem key={k} value={k}>{k}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {leadFilters.fieldKey !== "any" && (
+          <Input
+            placeholder={`${leadFilters.fieldKey} contains…`}
+            className="w-44"
+            value={leadFilters.fieldValue}
+            onChange={(e) => patchLeadFilters({ fieldValue: e.target.value })}
+          />
+        )}
+        {filtersActive && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setLeadFilters(EMPTY_LEAD_FILTERS); setPage(0); }}
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       <div className="flex items-center gap-2">
         <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(0); }}>
           <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
@@ -182,6 +330,7 @@ export default function CampaignDetailPage({
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Touches</TableHead>
               <TableHead>Last Contacted</TableHead>
+              <TableHead>Sequence</TableHead>
               {dynamicColumns.map((k) => (
                 <TableHead key={k} className="max-w-40 truncate" title={k}>{k}</TableHead>
               ))}
@@ -190,13 +339,13 @@ export default function CampaignDetailPage({
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={4 + dynamicColumns.length} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={5 + dynamicColumns.length} className="py-8 text-center text-muted-foreground">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : !filtered.length ? (
               <TableRow>
-                <TableCell colSpan={4 + dynamicColumns.length} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={5 + dynamicColumns.length} className="py-8 text-center text-muted-foreground">
                   No leads. Add leads from the Leads table (select → Add to Campaign).
                 </TableCell>
               </TableRow>
@@ -233,6 +382,25 @@ export default function CampaignDetailPage({
                     {r.last_contacted_at
                       ? new Date(r.last_contacted_at).toLocaleDateString()
                       : "—"}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {(() => {
+                      const en = enrollmentsByLead?.get(r.leads.id);
+                      if (!en) return <span className="text-muted-foreground">—</span>;
+                      return (
+                        <span className="flex items-center gap-1.5 whitespace-nowrap">
+                          <Badge className={`${toneClass(enrollmentTone(en.status))} font-normal`}>
+                            {en.status}
+                          </Badge>
+                          <span className="max-w-32 truncate" title={en.email_sequences?.name ?? ""}>
+                            {en.email_sequences?.name ?? "Sequence"}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            step {en.current_step}
+                          </span>
+                        </span>
+                      );
+                    })()}
                   </TableCell>
                   {dynamicColumns.map((k) => (
                     <TableCell

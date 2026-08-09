@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Mail, PauseCircle, PlayCircle, X } from "lucide-react";
-import { toneClass } from "@/lib/badge-styles";
+import { toneClass, enrollmentTone } from "@/lib/badge-styles";
 
 type Props = {
   leadId: string;
@@ -23,9 +23,6 @@ type Props = {
   /** Addresses on this lead, from lead_emails + decision_makers. */
   emails: { email: string; personId?: string | null; label?: string }[];
 };
-
-const statusTone = (s: string) =>
-  s === "active" ? "green" : s === "paused" ? "amber" : s === "stopped" ? "red" : "slate";
 
 // Enrol a lead on a sequence and manage its state from Lead Detail. Enrolling
 // only SCHEDULES emails — they land in Ready to Review for a human to send.
@@ -121,7 +118,7 @@ export function LeadSequences({ leadId, campaignId, emails }: Props) {
           <div key={en.id} className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium">{en.email_sequences?.name ?? "Sequence"}</span>
-              <Badge className={toneClass(statusTone(en.status))}>{en.status}</Badge>
+              <Badge className={toneClass(enrollmentTone(en.status))}>{en.status}</Badge>
               {en.stopped_reason && (
                 <span className="text-xs text-muted-foreground">({en.stopped_reason})</span>
               )}
