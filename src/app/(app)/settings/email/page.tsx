@@ -159,7 +159,11 @@ export default function EmailSettingsPage() {
       }
 
       if (!res.ok) throw new Error(json.error || `Could not connect (${res.status})`);
-      return json as { domains: { name: string; status: string }[] };
+      return json as {
+        domains: { name: string; status: string }[];
+        webhookRegistered?: boolean;
+        webhookError?: string | null;
+      };
     },
     onSuccess: (r) => {
       toast.success(
@@ -167,6 +171,14 @@ export default function EmailSettingsPage() {
           ? `Connected — ${r.domains.length} domain(s): ${r.domains.map((d) => d.name).join(", ")}`
           : "Connected — no domains in this Resend account yet"
       );
+      // Without the webhook, sent mail never leaves the Scheduled tab. The
+      // account still works, so this is a warning rather than a failure — but it
+      // must not be silent, which is how it went unnoticed before.
+      if (r.webhookError) {
+        toast.warning(`Delivery tracking is not active: ${r.webhookError}`, {
+          duration: 10000,
+        });
+      }
       setKeyForm({ apiKey: "", label: "" });
       qc.invalidateQueries({ queryKey: ["email-accounts"] });
     },

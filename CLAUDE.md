@@ -126,6 +126,18 @@ an empty, healthy-looking app. Confirm the owner before concluding anything.
 - Sends are spread across the outreach window rather than fired at once; a burst of
   identical timestamps reads as automation and a young domain cannot afford that.
   Warm-up is per **domain** and starts at the first real send, not at verification.
+- **The webhook is not optional — without it the queue looks broken.** Nothing
+  else ever tells ORMS an email landed, so `approved` rows never become `sent`:
+  delivered mail sits in the Scheduled tab forever and the Sent tab stays empty.
+  This is exactly what happened to the first 21 sends (Resend said `delivered`;
+  ORMS still showed "Scheduled"). `/api/email/accounts` now registers it at
+  connect time and warns if it cannot.
+  - The create field is **`endpoint`**, not `endpoint_url` (422 otherwise).
+  - It needs a publicly reachable `NEXT_PUBLIC_APP_URL`; Resend cannot call
+    localhost, so delivery tracking simply does not work in local dev.
+  - To reconcile rows that were sent before a webhook existed, read
+    `GET /emails/:id` and promote anything whose `last_event` is
+    delivered/opened/clicked.
 - A scheduled email is **not final**. Verified against the live API:
   `PATCH /emails/:id` changes `scheduled_at` (422 beyond 30 days) and
   `POST /emails/:id/cancel` pulls it back. Both answer 404 once delivered, which

@@ -88,6 +88,39 @@ export function getDomain(apiKey: string, domainId: string) {
   return call<ResendDomain>(apiKey, `/domains/${domainId}`);
 }
 
+// --- Webhooks ------------------------------------------------------------
+//
+// Without a webhook nothing ever tells ORMS an email actually landed, so
+// scheduled sends stay stuck on 'approved' forever and the Sent tab stays empty
+// — the queue looks broken when the mail went out perfectly. Registering it at
+// connect time is the only way this stays true without the user knowing it
+// exists.
+
+export type ResendWebhook = { id: string; endpoint: string; events?: string[] };
+
+/** Events ORMS acts on: delivery promotes the row, bounces stop the sequence. */
+export const WEBHOOK_EVENTS = [
+  "email.delivered",
+  "email.opened",
+  "email.bounced",
+  "email.complained",
+];
+
+export function listWebhooks(apiKey: string) {
+  return call<{ data: ResendWebhook[] }>(apiKey, "/webhooks");
+}
+
+/**
+ * Points an account's webhook at this install. Note the field is `endpoint`,
+ * not `endpoint_url` — Resend answers 422 "Missing `endpoint` field" otherwise.
+ */
+export function createWebhook(apiKey: string, endpoint: string) {
+  return call<{ id: string; signing_secret: string }>(apiKey, "/webhooks", {
+    method: "POST",
+    body: { endpoint, events: WEBHOOK_EVENTS },
+  });
+}
+
 // --- Sending -------------------------------------------------------------
 
 export type SendEmailInput = {

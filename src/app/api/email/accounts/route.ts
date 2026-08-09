@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { encryptKey, keyHint } from "@/lib/email-accounts";
-import { listDomains } from "@/lib/resend";
+import { listDomains, listWebhooks, createWebhook } from "@/lib/resend";
 
 // Connects a Resend account by API key. A user may connect several at once —
 // domains live in exactly one Resend account, so pooling accounts is how ORMS
@@ -105,7 +105,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ account: data, domains });
+  // Register the delivery webhook now, while we hold the key. Skipping this is
+  // what left 21 delivered emails showing as "Scheduled" — Resend had sent them
+  // all, but nothing ever told ORMS, so they never reached the Sent tab.
+  // Best-effort: a webhook failure must not undo a working connection.
+  let webhookRegistered = false;
+  let webhookError: string | null = null;
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
+  if (!appUrl || appUrl.includes("localhost")) {
+    // Resend cannot reach a local machine, so there is nothing useful to point at.
+    webhookError =
+      "NEXT_PUBLIC_APP_URL is missing or points at localhost, so delivery tracking is off. " +
+      "Set it to your deployed URL and reconnect.";
+  } else {
+    try {
+      const endpoint = `${appUrl}/api/email/webhook`;
+      const existing = await listWebhooks(key);
+      const already = (existing.data ?? []).some((w) => w.endpoint === endpoint);
+      if (!already) await createWebhook(key, endpoint);
+      webhookRegistered = true;
+    } catch (e) {
+      webhookError = e instanceof Error ? e.message : "Could not register the webhook";
+    }
+  }
+
+  return NextResponse.json({ account: data, domains, webhookRegistered, webhookError });
 }
 
 // Disconnect. Cascades to the domains registered under this account, because a
