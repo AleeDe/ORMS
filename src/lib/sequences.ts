@@ -46,6 +46,8 @@ export type QueueItem = {
   person_name: string | null;
   sender_name: string | null;
   sender_email: string | null;
+  /** Filter on the id, not the name — names are neither unique nor stable. */
+  sequence_id: string;
   sequence_name: string;
   total_steps: number;
 };

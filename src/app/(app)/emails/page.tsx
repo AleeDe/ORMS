@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createClient } from "@/lib/supabase/client";
-import { todayStr } from "@/lib/dates";
+import { todayStr, formatDueDay } from "@/lib/dates";
 import {
   materializeDue, skipQueueItem, pauseEnrollment, stopForLead, type QueueItem,
 } from "@/lib/sequences";
@@ -14,6 +14,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
 import {
@@ -21,6 +24,17 @@ import {
 } from "lucide-react";
 import { toneClass } from "@/lib/badge-styles";
 import { CapacityPanel } from "@/components/capacity-panel";
+
+/** An active enrollment whose next step has not been materialised yet. */
+type UpcomingEnrollment = {
+  id: string;
+  current_step: number;
+  next_due_at: string;
+  to_email: string;
+  sequence_id: string;
+  leads: { business_name: string } | null;
+  email_sequences: { name: string } | null;
+};
 
 // Ready to Review: emails ORMS has PREPARED and a human must SEND. Deliberately
 // mirrors the Tasks page — same tab shape, same one-click-per-row rhythm.
@@ -32,6 +46,9 @@ export default function EmailsPage() {
   const [draft, setDraft] = useState<{ subject: string; body: string }>({ subject: "", body: "" });
   // Per-row "send at" overrides, keyed by queue id. Empty means "use the window".
   const [sendAt, setSendAt] = useState<Record<string, string>>({});
+  // With several sequences running at once the queue is an undifferentiated
+  // list, so you cannot review one campaign's copy at a time.
+  const [sequenceFilter, setSequenceFilter] = useState("all");
 
   // Promote anything that has come due. Idempotent, so running it on every load
   // is how the queue stays current without a cron.
@@ -199,14 +216,55 @@ export default function EmailsPage() {
     onError: (e) => toast.error(e.message),
   });
 
-  const ready = (items ?? []).filter((i) => i.status === "ready");
+  // What is coming but not yet in the queue. Steps are only materialised once
+  // they fall due, so without this the page looks empty on a quiet day even
+  // though 15 follow-ups land tomorrow — "when is the next one?" had no answer.
+  const { data: upcomingEnrollments } = useQuery({
+    queryKey: ["upcoming-enrollments"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("email_enrollments")
+        .select("id, current_step, next_due_at, to_email, sequence_id, leads(business_name), email_sequences(name)")
+        .eq("status", "active")
+        .not("next_due_at", "is", null)
+        .gt("next_due_at", `${today}T23:59:59`)
+        .order("next_due_at")
+        .limit(500);
+      if (error) throw error;
+      return data as unknown as UpcomingEnrollment[];
+    },
+  });
+
+  // Every sequence represented in the queue, so the filter only ever offers
+  // options that would actually return something.
+  const sequenceOptions = Array.from(
+    new Map(
+      [
+        ...(items ?? []).map((i) => [i.sequence_id, i.sequence_name] as const),
+        ...(upcomingEnrollments ?? []).map(
+          (e) => [e.sequence_id, e.email_sequences?.name ?? "Sequence"] as const
+        ),
+      ].filter(([id]) => !!id)
+    )
+  ).sort((a, b) => a[1].localeCompare(b[1]));
+
+  const inSequence = (sequenceId: string | null) =>
+    sequenceFilter === "all" || sequenceId === sequenceFilter;
+
+  const visible = (items ?? []).filter((i) => inSequence(i.sequence_id));
+
+  const ready = visible.filter((i) => i.status === "ready");
   const dueToday = ready.filter((i) => i.due_date === today);
   const overdue = ready.filter((i) => i.due_date < today);
-  const upcoming = ready.filter((i) => i.due_date > today);
+  // Materialised and waiting, plus enrollments whose step is not yet created.
+  const upcomingQueued = ready.filter((i) => i.due_date > today);
+  const upcomingPending = (upcomingEnrollments ?? []).filter((e) =>
+    inSequence(e.sequence_id)
+  );
   // Approved but not yet delivered — handed to Resend, waiting for the window.
-  const scheduled = (items ?? []).filter((i) => i.status === "approved");
-  const sent = (items ?? []).filter((i) => i.status === "sent");
-  const other = (items ?? []).filter((i) =>
+  const scheduled = visible.filter((i) => i.status === "approved");
+  const sent = visible.filter((i) => i.status === "sent");
+  const other = visible.filter((i) =>
     ["skipped", "failed", "bounced", "cancelled"].includes(i.status)
   );
 
@@ -414,6 +472,58 @@ export default function EmailsPage() {
     );
   }
 
+  // Steps that have not been materialised yet — grouped by the day they fall due
+  // so the answer to "when is the next batch?" is the first heading.
+  function renderPending(list: UpcomingEnrollment[]) {
+    if (!list.length) return null;
+
+    const byDay = new Map<string, UpcomingEnrollment[]>();
+    for (const e of list) {
+      const day = e.next_due_at.slice(0, 10);
+      byDay.set(day, [...(byDay.get(day) ?? []), e]);
+    }
+
+    return (
+      <div className="space-y-4">
+        {[...byDay.entries()].map(([day, rows]) => (
+          <div key={day} className="space-y-2">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-medium">{formatDueDay(day, today)}</h3>
+              <Badge variant="secondary" className="font-normal">
+                {rows.length} email{rows.length === 1 ? "" : "s"}
+              </Badge>
+            </div>
+            <div className="rounded-md border divide-y">
+              {rows.slice(0, 50).map((e) => (
+                <div
+                  key={e.id}
+                  className="flex items-center justify-between gap-4 px-3 py-2 text-sm"
+                >
+                  <span className="min-w-0 truncate">
+                    {e.leads?.business_name ?? "Lead"}{" "}
+                    <span className="text-muted-foreground">· {e.to_email}</span>
+                  </span>
+                  <span className="whitespace-nowrap text-xs text-muted-foreground">
+                    step {e.current_step + 1} · {e.email_sequences?.name ?? "Sequence"}
+                  </span>
+                </div>
+              ))}
+              {rows.length > 50 && (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  …and {rows.length - 50} more
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+        <p className="text-xs text-muted-foreground">
+          These are prepared automatically on the day they fall due — open this page then
+          and they appear under Due Today, ready to review.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -440,11 +550,35 @@ export default function EmailsPage() {
 
       <CapacityPanel />
 
+      {/* Only worth showing once more than one sequence is in play. */}
+      {sequenceOptions.length > 1 && (
+        <div className="flex items-center gap-2">
+          <Select value={sequenceFilter} onValueChange={setSequenceFilter}>
+            <SelectTrigger className="w-72">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sequences</SelectItem>
+              {sequenceOptions.map(([id, name]) => (
+                <SelectItem key={id} value={id}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {sequenceFilter !== "all" && (
+            <Button variant="ghost" size="sm" onClick={() => setSequenceFilter("all")}>
+              Clear
+            </Button>
+          )}
+        </div>
+      )}
+
       <Tabs defaultValue="today">
         <TabsList>
           <TabsTrigger value="today">Due Today ({dueToday.length})</TabsTrigger>
           <TabsTrigger value="overdue">Overdue ({overdue.length})</TabsTrigger>
-          <TabsTrigger value="upcoming">Upcoming ({upcoming.length})</TabsTrigger>
+          <TabsTrigger value="upcoming">
+            Upcoming ({upcomingQueued.length + upcomingPending.length})
+          </TabsTrigger>
           <TabsTrigger value="scheduled">Scheduled ({scheduled.length})</TabsTrigger>
           <TabsTrigger value="sent">Sent ({sent.length})</TabsTrigger>
           <TabsTrigger value="other">Skipped &amp; failed ({other.length})</TabsTrigger>
@@ -456,8 +590,15 @@ export default function EmailsPage() {
         <TabsContent value="overdue" className="mt-4">
           {renderList(overdue, "Nothing overdue.")}
         </TabsContent>
-        <TabsContent value="upcoming" className="mt-4">
-          {renderList(upcoming, "Nothing scheduled yet.")}
+        <TabsContent value="upcoming" className="mt-4 space-y-6">
+          {/* Already materialised and reviewable, then what is still to come. */}
+          {upcomingQueued.length > 0 && renderList(upcomingQueued, "")}
+          {renderPending(upcomingPending)}
+          {!upcomingQueued.length && !upcomingPending.length && (
+            <p className="text-sm text-muted-foreground py-8">
+              Nothing queued. Enrol leads on a sequence to fill this up.
+            </p>
+          )}
         </TabsContent>
         <TabsContent value="scheduled" className="mt-4">
           {scheduled.length > 0 && (
