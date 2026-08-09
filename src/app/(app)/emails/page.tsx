@@ -235,9 +235,20 @@ export default function EmailsPage() {
                       >
                         {item.business_name}
                       </Link>
+                      {/* Once handed to Resend this step is done, so "Step 1 of 8"
+                          alone reads as "still stuck on step 1". Say which it is. */}
                       <Badge variant="outline">
-                        Step {item.step_position} of {item.total_steps}
+                        {item.status === "ready"
+                          ? `Step ${item.step_position} of ${item.total_steps}`
+                          : `Step ${item.step_position} of ${item.total_steps} ${
+                              item.status === "sent" ? "sent" : "scheduled"
+                            }`}
                       </Badge>
+                      {item.status === "approved" && item.step_position < item.total_steps && (
+                        <Badge variant="outline" className="font-normal text-muted-foreground">
+                          next: step {item.step_position + 1}
+                        </Badge>
+                      )}
                       <Badge variant="secondary">{item.sequence_name}</Badge>
                       {item.due_date < today && item.status === "ready" && (
                         <Badge className={toneClass("red")}>Overdue</Badge>

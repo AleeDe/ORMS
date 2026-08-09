@@ -30,7 +30,22 @@ export async function POST(req: NextRequest) {
 
   switch (event.type) {
     case "email.delivered":
-      await supabase.from("email_queue").update({ delivered_at: now }).eq("id", item.id);
+      // 'approved' means Resend was holding it for the send window. Delivery is
+      // the moment that ends, so promote it to 'sent' — otherwise a scheduled
+      // email sits in the Scheduled tab forever even after it has landed, and
+      // the Sent tab never shows it.
+      await supabase
+        .from("email_queue")
+        .update({ delivered_at: now, status: "sent", sent_at: now })
+        .eq("id", item.id)
+        .eq("status", "approved");
+
+      // Already 'sent' (delivered immediately): just stamp the delivery time.
+      await supabase
+        .from("email_queue")
+        .update({ delivered_at: now })
+        .eq("id", item.id)
+        .is("delivered_at", null);
       break;
 
     case "email.opened":

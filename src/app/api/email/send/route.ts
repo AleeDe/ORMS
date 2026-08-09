@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { sendEmail, formatFrom } from "@/lib/resend";
 import { getKeyForDomain } from "@/lib/email-accounts";
-import { nextSendSlot } from "@/lib/send-window";
+import { nextSendSlot, formatSlot } from "@/lib/send-window";
 
 // Sends one reviewed email from the Ready to Review queue. This route only ever
 // runs because a human clicked Send — nothing here is triggered on a schedule.
@@ -255,12 +255,36 @@ export async function POST(req: NextRequest) {
   // settings was already fetched above for the send window.
   const followupDays = settings?.default_followup_days ?? 3;
 
+  // Fetched here rather than after the activity insert because the timeline entry
+  // below needs the sequence name too.
+  const { data: enrollment } = await supabase
+    .from("email_enrollments")
+    .select("id, sequence_id, root_message_id, email_sequences(name)")
+    .eq("id", item.enrollment_id)
+    .single();
+
+  // The timeline is the relationship memory, so record enough to reconstruct the
+  // touch without opening the queue: which sequence and step, who it went to, and
+  // which identity sent it. "Email sent" alone loses the thread once a lead is on
+  // several sequences from different domains.
+  const sequenceName = (enrollment as unknown as {
+    email_sequences: { name: string } | null;
+  })?.email_sequences?.name;
+  const sequenceLabel = sequenceName ? `${sequenceName} · ` : "";
+  // Approving is not delivering, so the timeline must not imply the mail has
+  // landed — say when it is due out, in the user's own timezone.
+  const timing = slot.scheduledAt
+    ? ` — scheduled for ${formatSlot(slot.scheduledAt, settings?.timezone || "UTC")}`
+    : "";
+
   await supabase.from("activities").insert({
     user_id: auth.user.id,
     lead_id: item.lead_id,
     campaign_id: item.campaign_id,
     type: action,
-    content: `${finalSubject} (sequence step ${item.step_position})`,
+    content:
+      `${sequenceLabel}step ${item.step_position}: "${finalSubject}" ` +
+      `→ ${item.to_email} (from ${address})${timing}`,
     channel: "personal_email",
     person_id: item.person_id,
   });
@@ -285,12 +309,7 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Advance the sequence ----------------------------------------------
-  const { data: enrollment } = await supabase
-    .from("email_enrollments")
-    .select("id, sequence_id, root_message_id")
-    .eq("id", item.enrollment_id)
-    .single();
-
+  // `enrollment` was already fetched above for the timeline entry.
   const { data: nextStep } = await supabase
     .from("email_sequence_steps")
     .select("delay_days")
