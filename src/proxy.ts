@@ -35,8 +35,14 @@ export async function proxy(request: NextRequest) {
   // exchanges the emailed token for a session.
   const isAuthConfirm = path.startsWith("/auth/confirm");
   const isUpdatePassword = path.startsWith("/login/update-password");
+  // Provider callbacks carry no session and never will: Resend and Google call
+  // these server-to-server. Redirecting them to /login silently swallowed every
+  // delivery event, so approved emails never became 'sent'. These routes do
+  // their own verification (webhook looks rows up by Resend's own message id).
+  const isProviderCallback =
+    path.startsWith("/api/email/webhook") || path.startsWith("/api/google/callback");
 
-  if (!user && !isLoginPage && !isAuthConfirm) {
+  if (!user && !isLoginPage && !isAuthConfirm && !isProviderCallback) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
