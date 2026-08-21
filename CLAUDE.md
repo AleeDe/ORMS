@@ -135,6 +135,12 @@ an empty, healthy-looking app. Confirm the owner before concluding anything.
   - The create field is **`endpoint`**, not `endpoint_url` (422 otherwise).
   - It needs a publicly reachable `NEXT_PUBLIC_APP_URL`; Resend cannot call
     localhost, so delivery tracking simply does not work in local dev.
+  - **`src/proxy.ts` must exempt it.** The auth proxy redirects any request with
+    no user session to `/login`, and its matcher covers `/api`. A webhook has no
+    session, so it got a 307 and the handler never ran — the subscription existed
+    and still nothing worked. Any future provider callback needs the same
+    exemption. Verify with `curl -X POST .../api/email/webhook` expecting 200,
+    **not** 307.
   - To reconcile rows that were sent before a webhook existed, read
     `GET /emails/:id` and promote anything whose `last_event` is
     delivered/opened/clicked.
