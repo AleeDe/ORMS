@@ -8,13 +8,47 @@ that cost real time to rediscover.
 
 ## The one rule that explains the email feature
 
-**ORMS prepares emails; a human sends them.** Nothing in this codebase transmits
-mail on a timer. Auto-*scheduling* is in; auto-*sending* is deliberately out, and
-that distinction is the whole product. If you are ever tempted to add a cron that
-sends, re-read this line — the "no cron" design is intentional, not an omission.
+**CHANGED 2026-09-04 — the user explicitly decided this.** The old rule was "a
+human clicks Send on every email". It is now **approve-then-autosend**: the human
+reviews and approves every step's COPY and explicitly starts the campaign, after
+which `lib/scheduler.ts` dispatches. Human judgement moved *earlier*; it did not
+disappear.
 
-The consequence: `materialize_due_emails()` is called from the **client on page
-load** (`/emails`), not by a scheduler. It is idempotent so that is safe.
+Nothing can send unless **all** of these hold, and they are enforced in
+`claim_due_emails()` (SQL), not in the caller:
+- the campaign is `send_state = 'running'` (started deliberately)
+- the step has an `approved_at`
+- the enrollment is `active` (a paused/replied lead is skipped)
+- the previous step actually sent, and its delay has elapsed
+
+**Approval is per STEP, not per email.** A step is one piece of copy shared by
+every lead — approving it per email would be the same decision 1,000 times. Do
+not "improve" this into an 8,000-row approval list; that was considered and
+rejected as ~11 hours of clicking per campaign.
+
+Two materialisers now exist, and they are not interchangeable:
+- `materialize_due_emails()` — one step at a time, when due. The OLD manual flow
+  (`/emails`, client-side on page load).
+- `materialize_campaign_drafts(campaign_id)` — the WHOLE grid up front as
+  `draft` rows, so every step of every lead can be reviewed before starting.
+
+## ⚠️ PENDING: migration 20260904000001 is NOT applied
+
+`supabase/migrations/20260904000001_campaign_approval_and_autosend.sql` was
+written but **could not be applied** — the session's `SUPABASE_ACCESS_TOKEN`
+returned 401 and no other credential was available. Everything in the
+approve-then-autosend flow (the new API routes, `lib/scheduler.ts`, the review
+UI) will fail at runtime until it runs.
+
+Apply it in **two statements** — a new enum value cannot be used in the same
+transaction that adds it:
+1. `alter type email_queue_status add value if not exists 'draft';`
+2. the rest of the file
+
+Then verify: `send_state` on `campaigns`, `approved_at` on
+`email_sequence_steps`, `paused_reason` on `email_enrollments`, and the three
+functions `materialize_campaign_drafts` / `claim_due_emails` /
+`campaign_send_summary`.
 
 ## The pipeline, end to end
 

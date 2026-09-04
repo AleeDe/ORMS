@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EnrollCampaignDialog } from "@/components/enroll-campaign-dialog";
+import { CampaignReview } from "@/components/campaign-review";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -111,13 +112,14 @@ export default function CampaignDetailPage({
     queryFn: async () => {
       const { data, error } = await supabase
         .from("email_enrollments")
-        .select("lead_id, status, current_step, email_sequences(name)")
+        .select("id, lead_id, status, current_step, paused_reason, email_sequences(name)")
         .in("lead_id", leadIds)
         .order("created_at", { ascending: false });
       if (error) throw error;
 
       const rows = data as unknown as {
-        lead_id: string; status: string; current_step: number;
+        id: string; lead_id: string; status: string; current_step: number;
+        paused_reason: string | null;
         email_sequences: { name: string } | null;
       }[];
 
@@ -176,6 +178,32 @@ export default function CampaignDetailPage({
     onError: (e) => toast.error(e.message),
   });
 
+  // Pause a lead when a reply lands (and resume it later). Pausing keeps
+  // current_step, so resuming continues the sequence instead of restarting it.
+  const holdLead = useMutation({
+    mutationFn: async (v: { enrollmentId: string; action: "pause" | "resume"; leadId: string }) => {
+      const res = await fetch("/api/email/lead-hold", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enrollmentId: v.enrollmentId,
+          leadId: v.leadId,
+          action: v.action,
+          reason: v.action === "pause" ? "replied" : undefined,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Could not update the lead");
+      return json;
+    },
+    onSuccess: (_d, v) => {
+      toast.success(v.action === "pause" ? "Paused — reply received" : "Resumed");
+      queryClient.invalidateQueries({ queryKey: ["campaign-lead-enrollments", id] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-send-summary", id] });
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
   const stats = statCounts ?? { total: 0, contacted: 0, replied: 0, meetings: 0, won: 0 };
   const filtered = rows ?? [];
   const totalPages = Math.max(1, Math.ceil((leadsPage?.count ?? 0) / PAGE_SIZE));
@@ -202,6 +230,14 @@ export default function CampaignDetailPage({
           <EnrollCampaignDialog campaignId={campaign.id} campaignName={campaign.name} />
         )}
       </div>
+
+      {/* Approve every step, then start — the scheduler sends from there. */}
+      {campaign && (
+        <CampaignReview
+          campaignId={campaign.id}
+          sendState={campaign.send_state ?? "draft"}
+        />
+      )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         {[
@@ -398,6 +434,28 @@ export default function CampaignDetailPage({
                           <span className="text-xs text-muted-foreground">
                             step {en.current_step}
                           </span>
+                          {/* Reply handling lives on the row: find the lead,
+                              pause it, resume when the conversation ends. */}
+                          {en.status === "active" && (
+                            <Button
+                              size="sm" variant="ghost" className="h-6 px-1 text-xs"
+                              onClick={() => holdLead.mutate({
+                                enrollmentId: en.id, leadId: r.leads.id, action: "pause",
+                              })}
+                            >
+                              Reply
+                            </Button>
+                          )}
+                          {en.status === "paused" && (
+                            <Button
+                              size="sm" variant="ghost" className="h-6 px-1 text-xs"
+                              onClick={() => holdLead.mutate({
+                                enrollmentId: en.id, leadId: r.leads.id, action: "resume",
+                              })}
+                            >
+                              Resume
+                            </Button>
+                          )}
                         </span>
                       );
                     })()}
