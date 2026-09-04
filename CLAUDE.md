@@ -32,23 +32,30 @@ Two materialisers now exist, and they are not interchangeable:
 - `materialize_campaign_drafts(campaign_id)` — the WHOLE grid up front as
   `draft` rows, so every step of every lead can be reviewed before starting.
 
-## ⚠️ PENDING: migration 20260904000001 is NOT applied
+## Two flows now coexist — tell them apart by `due_date`
 
-`supabase/migrations/20260904000001_campaign_approval_and_autosend.sql` was
-written but **could not be applied** — the session's `SUPABASE_ACCESS_TOKEN`
-returned 401 and no other credential was available. Everything in the
-approve-then-autosend flow (the new API routes, `lib/scheduler.ts`, the review
-UI) will fail at runtime until it runs.
+The old manual flow and the new approve-then-autosend flow both write to
+`email_queue`, and the reliable way to tell a row's origin is:
 
-Apply it in **two statements** — a new enum value cannot be used in the same
-transaction that adds it:
-1. `alter type email_queue_status add value if not exists 'draft';`
-2. the rest of the file
+- **`due_date` set** → old flow (`materialize_due_emails`, sent from `/emails`)
+- **`due_date` NULL** → new flow (`materialize_campaign_drafts`, status `draft`)
 
-Then verify: `send_state` on `campaigns`, `approved_at` on
-`email_sequence_steps`, `paused_reason` on `email_enrollments`, and the three
-functions `materialize_campaign_drafts` / `claim_due_emails` /
-`campaign_send_summary`.
+That distinction is how a 2026-09-04 investigation proved three emails sent that
+day came from the old page and not from the new scheduler. `due_date` is
+nullable *because* drafts have no meaningful date — when step 8 goes out depends
+on when step 7 actually sends.
+
+**Migrations `20260904000001/2/3` are applied.** Two bugs were found by testing
+against real data, both worth remembering:
+
+1. `due_date` was NOT NULL, so every draft insert failed with 23502 — and the
+   function's per-row `exception` handler reported it as "0 prepared" instead of
+   an error. A catch-all handler in a loop will hide schema bugs; it now
+   re-raises anything that is not a per-lead data problem.
+2. The delay clock ran off the previous step's `sent_at`, which stays NULL until
+   the delivery webhook fires. A missed webhook would have stalled a sequence
+   forever with nothing in the UI to explain it. It now measures from
+   `approved_at` (when *we* dispatched), which is always set.
 
 ## The pipeline, end to end
 
