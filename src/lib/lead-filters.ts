@@ -7,7 +7,7 @@ import { SupabaseClient } from "@supabase/supabase-js";
 // shapes, this module resolves a filter set into a list of matching lead ids
 // that either page can constrain its own query with.
 //
-// The anti-joins are the subtle part: an empty embed (`emf:lead_emails()`)
+// The anti-joins are the subtle part: an empty embed (`emf:lead_emails!lead_emails_lead_id_fkey()`)
 // combined with `.is('emf', null)` is how PostgREST expresses "has NO related
 // row". `!inner` is the opposite. Getting this wrong silently returns every
 // lead, which looks like the filter simply did nothing.
@@ -89,14 +89,14 @@ export async function resolveLeadFilterIds(
 
   const embeds: string[] = [];
   if (["valid", "invalid", "has"].includes(f.emailFilter))
-    embeds.push("emf:lead_emails!inner(id)");
-  if (f.emailFilter === "none") embeds.push("emf:lead_emails()");
-  if (f.phoneFilter === "has") embeds.push("phf:lead_phones!inner(id)");
-  if (f.phoneFilter === "none") embeds.push("phf:lead_phones()");
+    embeds.push("emf:lead_emails!lead_emails_lead_id_fkey!inner(id)");
+  if (f.emailFilter === "none") embeds.push("emf:lead_emails!lead_emails_lead_id_fkey()");
+  if (f.phoneFilter === "has") embeds.push("phf:lead_phones!lead_phones_lead_id_fkey!inner(id)");
+  if (f.phoneFilter === "none") embeds.push("phf:lead_phones!lead_phones_lead_id_fkey()");
 
   // A specific role does join decision_makers, which is a real table with an FK.
   if (f.personFilter !== "any" && f.personFilter !== "has")
-    embeds.push("dmf:decision_makers!inner(role)");
+    embeds.push("dmf:decision_makers!decision_makers_lead_id_fkey!inner(role)");
 
   let q = supabase.from("leads").select(["id", ...embeds].join(", "));
 

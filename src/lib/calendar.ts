@@ -71,12 +71,13 @@ export function downloadIcs(ev: CalendarEvent, fileName = "event.ics") {
 
 // Auto-create the event on the user's connected Google Calendar (server route).
 // Returns true if it was created, false if the user hasn't connected Google.
-export async function autoCreateGoogleEvent(ev: CalendarEvent): Promise<boolean> {
+export async function autoCreateGoogleEvent(ev: CalendarEvent, workspaceId: string): Promise<boolean> {
   try {
     const res = await fetch("/api/google/event", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        workspaceId,
         title: ev.title,
         description: ev.description,
         location: ev.location,

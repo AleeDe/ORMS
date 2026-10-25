@@ -18,8 +18,8 @@ export function redirectUri() {
   return `${appUrl()}/api/google/callback`;
 }
 
-// Consent screen URL. `state` carries the app user id so the callback can bind
-// the returned refresh token to the right account.
+// The route issues an opaque state and binds it to the account and workspace
+// in an HttpOnly cookie. The callback validates both before saving credentials.
 export function consentUrl(state: string) {
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
@@ -82,12 +82,13 @@ export async function fetchGoogleEmail(accessToken: string): Promise<string | nu
 }
 
 // Returns a valid access token for the user, refreshing (and caching) as needed.
-async function getAccessToken(userId: string): Promise<{ token: string; calendarId: string } | null> {
+async function getAccessToken(userId: string, workspaceId: string): Promise<{ token: string; calendarId: string } | null> {
   const admin = createAdminClient();
   const { data: row } = await admin
     .from("google_calendar_tokens")
     .select("refresh_token, access_token, access_token_expires_at, calendar_id")
     .eq("user_id", userId)
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (!row) return null;
 
@@ -105,16 +106,17 @@ async function getAccessToken(userId: string): Promise<{ token: string; calendar
       access_token: refreshed.access_token,
       access_token_expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
     })
-    .eq("user_id", userId);
+    .eq("user_id", userId).eq("workspace_id", workspaceId);
   return { token: refreshed.access_token, calendarId: row.calendar_id };
 }
 
-export async function userHasCalendar(userId: string): Promise<boolean> {
+export async function userHasCalendar(userId: string, workspaceId: string): Promise<boolean> {
   const admin = createAdminClient();
   const { data } = await admin
     .from("google_calendar_tokens")
     .select("user_id")
     .eq("user_id", userId)
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
   return !!data;
 }
@@ -132,9 +134,10 @@ export type NewCalendarEvent = {
 // if the user isn't connected (caller decides whether that's an error).
 export async function createCalendarEvent(
   userId: string,
+  workspaceId: string,
   ev: NewCalendarEvent
 ): Promise<{ id: string; htmlLink: string } | null> {
-  const auth = await getAccessToken(userId);
+  const auth = await getAccessToken(userId, workspaceId);
   if (!auth) return null;
 
   const end = ev.end ?? new Date(ev.start.getTime() + 30 * 60 * 1000);

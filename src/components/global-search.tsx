@@ -1,10 +1,11 @@
 "use client";
 
+import { useWorkspaceClient } from "@/components/workspace-provider";
+
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/workspace-navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,7 @@ type Hit = {
 // personal email/phone, a person's name, or any custom field value. Built for the
 // "unknown number just called, who is this?" case. Opens with the button or Cmd/Ctrl+K.
 export function GlobalSearch() {
-  const supabase = createClient();
+  const supabase = useWorkspaceClient();
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");

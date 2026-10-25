@@ -1,5 +1,7 @@
-import { SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { businessDaysFromNow } from "./dates";
+import { TOUCH_TYPES } from "./campaign-scope";
+import { CHANNEL_LABELS, channelSupportsAction, isContactChannel } from "./people";
 
 export type QuickLogAction =
   | "EMAIL_SENT"
@@ -25,10 +27,6 @@ export const STATUS_SUGGESTION: Partial<Record<QuickLogAction, { from: string[];
   EMAIL_REPLY: { from: ["new", "contacted", "following_up"], to: "replied" },
   MEETING_BOOKED: { from: ["new", "contacted", "following_up", "replied"], to: "interested_meeting" },
 };
-
-const TOUCH_EVENTS: QuickLogAction[] = [
-  "EMAIL_SENT", "FOLLOWUP_SENT", "CALL_ATTEMPTED", "CALL_CONNECTED",
-];
 
 // PRD §12.2 auto-task rules
 function autoTask(
@@ -73,10 +71,25 @@ export async function quickLog(
     /** Which person at the lead was contacted */
     personId?: string | null;
   }
-): Promise<{ taskCreated: string | null; statusSuggestion: string | null }> {
-  const { data: userData } = await supabase.auth.getUser();
-  const userId = userData.user!.id;
+): Promise<{ taskCreated: string | null; statusSuggestion: string | null; campaignId: string; warnings: string[] }> {
+  if (!opts.campaignId) throw new Error("Choose a campaign before logging outreach.");
+  const { data: userData, error: authError } = await supabase.auth.getUser();
+  if (authError || !userData.user) throw new Error("Please sign in again.");
+  const userId = userData.user.id;
   const followupDays = opts.followupDays ?? 3;
+  const { data: membership, error: membershipError } = await supabase.from("campaign_leads")
+    .select("id, status, touch_count, campaigns!campaign_leads_campaign_id_fkey(default_channel)").eq("campaign_id", opts.campaignId)
+    .eq("lead_id", opts.leadId).single();
+  if (membershipError || !membership) throw new Error("This lead is not in the selected campaign.");
+  const campaign = membership.campaigns as unknown as { default_channel: string | null } | null;
+  const channel = campaign?.default_channel || opts.channel || null;
+  if (channel !== null && !isContactChannel(channel)) throw new Error("Choose a valid outreach channel.");
+  if (!channelSupportsAction(channel, opts.action)) throw new Error(`That action is not available through ${CHANNEL_LABELS[channel!]}. Choose a matching channel in campaign settings.`);
+  if (opts.personId) {
+    const { error } = await supabase.from("decision_makers").select("id")
+      .eq("id", opts.personId).eq("lead_id", opts.leadId).single();
+    if (error) throw new Error("Choose a person linked to this lead.");
+  }
 
   const { error: actErr } = await supabase.from("activities").insert({
     user_id: userId,
@@ -84,12 +97,15 @@ export async function quickLog(
     campaign_id: opts.campaignId,
     type: opts.action,
     content: opts.note || null,
-    channel: opts.channel || null,
+    channel,
     person_id: opts.personId || null,
   });
   if (actErr) throw actErr;
 
-  // auto-task
+  // Once the activity exists, report secondary failures without inviting a
+  // retry that would log the same outreach twice.
+  const warnings: string[] = [];
+  let taskCreated: string | null = null;
   const task = autoTask(opts.action, followupDays);
   if (task) {
     const { error } = await supabase.from("tasks").insert({
@@ -98,39 +114,37 @@ export async function quickLog(
       campaign_id: opts.campaignId,
       ...task,
     });
-    if (error) throw error;
+    if (error) warnings.push("Outreach saved, but the follow-up task could not be created. Add one manually.");
+    else taskCreated = task.title;
   }
 
   // touch count + last contacted on campaign_leads
-  if (opts.campaignId && TOUCH_EVENTS.includes(opts.action)) {
-    const { data: cl } = await supabase
-      .from("campaign_leads")
-      .select("id, touch_count")
-      .eq("campaign_id", opts.campaignId)
-      .eq("lead_id", opts.leadId)
-      .maybeSingle();
-    if (cl) {
-      await supabase
-        .from("campaign_leads")
-        .update({ touch_count: cl.touch_count + 1, last_contacted_at: new Date().toISOString() })
-        .eq("id", cl.id);
+  if (TOUCH_TYPES.includes(opts.action)) {
+    let updated = false;
+    // Compare-and-swap prevents two simultaneous logs from losing a touch.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const { data: cl, error: readError } = await supabase.from("campaign_leads")
+        .select("id, touch_count, last_contacted_at").eq("id", membership.id).single();
+      if (readError || !cl) break;
+      const now = new Date().toISOString();
+      const { data: changed, error } = await supabase.from("campaign_leads")
+        .update({ touch_count: cl.touch_count + 1, last_contacted_at: cl.last_contacted_at && cl.last_contacted_at > now ? cl.last_contacted_at : now })
+        .eq("id", cl.id).eq("campaign_id", opts.campaignId).eq("lead_id", opts.leadId)
+        .eq("touch_count", cl.touch_count).select("id");
+      if (error) break;
+      if (changed?.length) { updated = true; break; }
     }
+    if (!updated) warnings.push("Outreach saved, but the campaign touch counter could not be refreshed.");
   }
 
   // status suggestion
   let statusSuggestion: string | null = null;
   const rule = STATUS_SUGGESTION[opts.action];
   if (opts.campaignId && rule) {
-    const { data: cl } = await supabase
-      .from("campaign_leads")
-      .select("status")
-      .eq("campaign_id", opts.campaignId)
-      .eq("lead_id", opts.leadId)
-      .maybeSingle();
-    if (cl && rule.from.includes(cl.status)) statusSuggestion = rule.to;
+    if (rule.from.includes(membership.status)) statusSuggestion = rule.to;
   }
 
-  return { taskCreated: task?.title ?? null, statusSuggestion };
+  return { taskCreated, statusSuggestion, campaignId: opts.campaignId, warnings };
 }
 
 export const STATUS_LABELS: Record<string, string> = {
