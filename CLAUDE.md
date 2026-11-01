@@ -89,9 +89,8 @@ once by the matching verified email. `/api/workspaces/[workspaceId]/invitations`
 creates the invitation under the owner's RLS session and sends transactional
 email through Resend, with a per-invitation idempotency key. Set server-only
 `RESEND_API_KEY`, `RESEND_FROM_EMAIL` (verified sender), and `NEXT_PUBLIC_APP_URL`.
-Invitation email sending is off by default. Set the server-only
-`WORKSPACE_INVITATION_EMAIL_ENABLED=true` only when explicitly enabling it.
-Otherwise invitations are shared by link, even when Resend credentials exist.
+Invitation emails send when Resend credentials are configured. The server-only
+`WORKSPACE_INVITATION_EMAIL_ENABLED=false` flag can temporarily pause sending.
 `WORKSPACE_INVITATION_APP_URL` optionally overrides the shared-link origin without
 changing local Google Calendar OAuth callbacks (`NEXT_PUBLIC_APP_URL`).
 Without delivery configuration, retain a shareable link and explicitly report
@@ -104,8 +103,18 @@ assignments. Preserve FK cascade behavior when maintaining work guards.
 Supabase Auth must require email confirmation (`mailer_autoconfirm=false`) so
 invitation acceptance verifies control of the recipient address. Authentication
 emails use Supabase's SMTP configuration, independently of invitation sending.
-The auth callback supports both PKCE codes and token-hash templates and preserves
-the invitation destination when sign-in must be retried. Allow localhost, the
+Signup uses an emailed OTP and `/login` provides verification and resend controls.
+An unconfirmed existing account can request a fresh code from that same screen.
+The configured confirmation template must include `{{ .Token }}`.
+Password recovery emails link to `/auth/reset-password` with a token hash. GET
+only renders a form; the browser verifies the token as `recovery` when the user
+submits a new password. Keep this separate from automatic GET verification so
+mail scanners cannot consume the reset token and no PKCE verifier is needed.
+The auth callback supports legacy codes and preserves the invitation destination.
+Deploy the updated app before applying the versioned email templates with
+`node scripts/configure-auth-emails.mjs --apply` (local management token required).
+Run the script without `--apply` to preview the exact settings it will change.
+Allow localhost, the
 current Netlify URL, and the custom domain in Auth redirect settings; shared links
 use `WORKSPACE_INVITATION_APP_URL` or fall back to `NEXT_PUBLIC_APP_URL`.
 

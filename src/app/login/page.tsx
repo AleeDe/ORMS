@@ -1,23 +1,27 @@
 "use client";
 
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Suspense, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowRight, CheckCircle2, CircleAlert, Eye, EyeOff, LoaderCircle, LockKeyhole, Mail, MailCheck, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, CircleAlert, Eye, EyeOff, LoaderCircle, LockKeyhole, Mail, ShieldCheck, Sparkles } from "lucide-react";
 import { LoginBrand, LoginShowcase } from "@/components/login-showcase";
 import { safeReturnPath } from "@/lib/workspace";
 import { SlidingCapsule } from "@/components/ui/sliding-capsule";
+import { EmailVerification } from "@/components/email-verification";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const params = useSearchParams();
+  const next = safeReturnPath(params.get("next"));
+  const joining = next.startsWith("/join/");
   const supabase = createClient();
   const emailInput = useRef<HTMLInputElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(params.get("email") ?? "");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [capsLock, setCapsLock] = useState(false);
@@ -27,6 +31,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [navigating, setNavigating] = useState(false);
   const [confirmationEmail, setConfirmationEmail] = useState<string | null>(null);
+  const [confirmationSent, setConfirmationSent] = useState(false);
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const busy = loading || navigating;
 
@@ -65,11 +70,11 @@ export default function LoginPage() {
     }
     setLoading(true);
     try {
-      const next = safeReturnPath(new URLSearchParams(location.search).get("next"));
       const { data, error: authError } = mode === "signin"
         ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
         : await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: `${location.origin}/auth/confirm?next=${encodeURIComponent(next)}` } });
       if (authError) {
+        if (authError.code === "email_not_confirmed") { setConfirmationEmail(email.trim().toLowerCase()); setConfirmationSent(false); return; }
         setError(authError.code === "invalid_credentials"
           ? "That email and password don’t match. Check them and try again."
           : authError.name === "AuthRetryableFetchError"
@@ -79,6 +84,7 @@ export default function LoginPage() {
       }
       if (mode === "signup" && !data.session) {
         setConfirmationEmail(email.trim());
+        setConfirmationSent(true);
         setPassword("");
         return;
       }
@@ -101,19 +107,11 @@ export default function LoginPage() {
     <section aria-label="Access your ORMS workspace" className="flex min-w-0 flex-col px-5 py-7 sm:px-10 lg:px-12 xl:px-20">
       <div className="mb-8 flex items-center justify-between gap-4 lg:hidden"><LoginBrand /><span className="max-w-28 text-right text-xs leading-5 text-muted-foreground">Your outreach workspace</span></div>
       <div className="mx-auto my-auto w-full max-w-[440px] py-4 sm:py-8">
-        {confirmationEmail ? <div className="rounded-3xl border bg-card p-6 shadow-sm motion-safe:animate-in motion-safe:fade-in sm:p-9" role="status">
-          <span className="mb-6 flex size-14 items-center justify-center rounded-2xl bg-teal-500/10 text-teal-600"><MailCheck className="size-7" /></span>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-primary">One more step</p>
-          <h1 className="text-3xl font-semibold tracking-tight">Check your inbox.</h1>
-          <p className="mt-4 text-sm leading-7 text-muted-foreground">Check <strong className="break-all font-medium text-foreground">{confirmationEmail}</strong> for a confirmation link to finish setting up your account.</p>
-          <p className="mt-3 text-sm leading-6 text-muted-foreground">Can’t see it? Have a look in your spam folder.</p>
-          <Button className="mt-7 h-12 w-full rounded-xl" onClick={() => switchMode("signin")}>Back to sign in <ArrowRight className="size-4" /></Button>
-          <button type="button" onClick={() => { setConfirmationEmail(null); setEmail(""); }} className="mt-3 min-h-11 w-full rounded-lg text-sm text-muted-foreground hover:text-primary focus-visible:outline-2 focus-visible:outline-primary">Use a different email</button>
-        </div> : <>
+        {confirmationEmail ? <EmailVerification key={confirmationEmail} email={confirmationEmail} next={next} sent={confirmationSent} onBack={() => switchMode("signin")} /> : <>
           <div className="mb-7">
             <p className="mb-3 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><span className="size-1.5 rounded-full bg-teal-500" /> {mode === "signin" ? "Your next move starts here" : "A fresh start"}</p>
-            <h1 className="text-[2rem] font-semibold leading-tight tracking-tight sm:text-4xl">{mode === "signin" ? "Welcome back." : "Create your workspace."}</h1>
-            <p className="mt-3 text-sm leading-7 text-muted-foreground">{mode === "signin" ? "Your leads, campaigns, and next conversations. All in one place." : "Bring your audience together. Make every conversation count."}</p>
+            <h1 className="text-[2rem] font-semibold leading-tight tracking-tight sm:text-4xl">{joining ? mode === "signin" ? "Sign in to join your team." : "Create your team login." : mode === "signin" ? "Welcome back." : "Create your workspace."}</h1>
+            <p className="mt-3 text-sm leading-7 text-muted-foreground">{joining ? "Verify your email, then review and accept your campaign invitation. Your other workspaces stay separate." : mode === "signin" ? "Your leads, campaigns, and next conversations. All in one place." : "Bring your audience together. Make every conversation count."}</p>
           </div>
           <div className="rounded-3xl border border-border/80 bg-card p-5 shadow-[0_8px_40px_-20px_rgba(40,35,100,0.18)] sm:p-7">
             <div role="group" className="group/auth-switch relative isolate mb-7 grid grid-cols-2 gap-1 rounded-xl bg-muted/80 p-1" aria-label="Account access options">
@@ -127,7 +125,7 @@ export default function LoginPage() {
                 {emailError && <p id="email-error" role="alert" className="text-xs text-destructive">{emailError}</p>}
               </div>
               <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2"><Label htmlFor="password" className="text-sm font-medium">Password</Label>{mode === "signin" && <Link href="/login/forgot-password" className="inline-flex min-h-7 items-center rounded text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary">Forgot password?</Link>}</div>
+                <div className="flex items-center justify-between gap-2"><Label htmlFor="password" className="text-sm font-medium">Password</Label>{mode === "signin" && <Link href={`/login/forgot-password?next=${encodeURIComponent(next)}`} className="inline-flex min-h-7 items-center rounded text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary">Forgot password?</Link>}</div>
                 <div className="relative"><LockKeyhole aria-hidden="true" className="pointer-events-none absolute left-3.5 top-4 size-4 text-muted-foreground" /><Input ref={passwordInput} id="password" name="password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} required minLength={mode === "signup" ? 6 : undefined} disabled={busy} aria-invalid={!!passwordError} aria-describedby={[passwordError ? "password-error" : "", capsLock ? "caps-lock" : "", mode === "signup" ? "password-hint" : ""].filter(Boolean).join(" ") || undefined} className="h-12 rounded-xl bg-background/40 pl-11 pr-12 text-base! placeholder:text-muted-foreground/60" placeholder={mode === "signin" ? "Enter your password" : "Create a password"} value={password} onKeyDown={checkCapsLock} onKeyUp={checkCapsLock} onBlur={() => setCapsLock(false)} onChange={(event) => { setPassword(event.target.value); setPasswordError(null); setError(null); }} /><button type="button" disabled={busy} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onMouseDown={(event) => event.preventDefault()} onClick={() => setShowPassword(!showPassword)} className="absolute right-0.5 top-0.5 flex size-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-primary focus-visible:outline-2 focus-visible:outline-primary">{showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button></div>
                 {passwordError && <p id="password-error" role="alert" className="text-xs text-destructive">{passwordError}</p>}
                 {capsLock && <p id="caps-lock" role="status" className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300"><CircleAlert className="size-3.5" /> Caps Lock is on</p>}
@@ -145,4 +143,8 @@ export default function LoginPage() {
       <p className="mt-6 text-center text-[11px] text-muted-foreground/70">Outreach Relationship Management System</p>
     </section>
   </main>;
+}
+
+export default function LoginPage() {
+  return <Suspense fallback={<div className="grid min-h-svh place-items-center"><p role="status" className="text-sm text-muted-foreground">Loading sign in…</p></div>}><LoginForm /></Suspense>;
 }

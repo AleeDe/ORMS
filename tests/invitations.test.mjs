@@ -78,11 +78,12 @@ test("transient email failures retry the identical payload and key without dupli
   const calls = [], delays = [];
   try {
     process.env.RESEND_API_KEY = "test-key"; process.env.RESEND_FROM_EMAIL = "ORMS <test@example.invalid>";
-    delete process.env.WORKSPACE_INVITATION_EMAIL_ENABLED;
+    process.env.WORKSPACE_INVITATION_EMAIL_ENABLED = "false";
     global.fetch = async () => { throw Error("Email delivery must remain disabled by default"); };
     assert.equal(await sendInvitationEmail(invite), "not_configured");
-    process.env.WORKSPACE_INVITATION_EMAIL_ENABLED = "false";
-    assert.equal(await sendInvitationEmail(invite), "not_configured");
+    delete process.env.WORKSPACE_INVITATION_EMAIL_ENABLED;
+    global.fetch = async () => Response.json({ id: "enabled-by-default" });
+    assert.equal(await sendInvitationEmail(invite), "sent");
     process.env.WORKSPACE_INVITATION_EMAIL_ENABLED = "true";
     global.setTimeout = (callback, delay) => { delays.push(delay); queueMicrotask(callback); return 0; };
     for (const first of [429, 503, "network"]) {

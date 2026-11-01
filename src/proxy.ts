@@ -28,7 +28,7 @@ export async function proxy(request: NextRequest) {
     return redirected;
   }
   const { data: { user } } = await supabase.auth.getUser();
-  const publicRoute = path.startsWith("/login") || path.startsWith("/auth/confirm") || path === "/auth/error" || path.startsWith("/join/") || path === "/api/google/callback";
+  const publicRoute = path.startsWith("/login") || path.startsWith("/auth/confirm") || path === "/auth/error" || path === "/auth/reset-password" || path.startsWith("/join/") || path === "/api/google/callback";
   if (!user && !publicRoute) {
     if (path.startsWith("/api/")) return NextResponse.json({ error: "Please sign in again." }, { status: 401 });
     const login = new URL("/login", request.url);

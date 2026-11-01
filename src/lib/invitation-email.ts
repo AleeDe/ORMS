@@ -1,6 +1,6 @@
 type InvitationEmail = { id: string; email: string; workspaceName: string; inviterEmail: string; url: string };
 export type InvitationDelivery = "sent" | "failed" | "not_configured";
-export function invitationEmailEnabled() { return process.env.WORKSPACE_INVITATION_EMAIL_ENABLED === "true"; }
+export function invitationEmailEnabled() { return process.env.WORKSPACE_INVITATION_EMAIL_ENABLED !== "false"; }
 export function invitationEmailConfigured() { return invitationEmailEnabled() && Boolean(process.env.RESEND_API_KEY?.trim() && process.env.RESEND_FROM_EMAIL?.trim()); }
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);

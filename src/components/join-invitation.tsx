@@ -12,7 +12,7 @@ export function JoinInvitation({ token, email, preview }: { token: string; email
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const login = `/login?next=${encodeURIComponent(`/join/${token}`)}`;
+  const login = `/login?next=${encodeURIComponent(`/join/${token}`)}${preview?.email ? `&email=${encodeURIComponent(preview.email)}` : ""}`;
   const wrongAccount = Boolean(email && preview?.email && email.toLowerCase() !== preview.email.toLowerCase());
   async function accept() {
     if (busy) return;

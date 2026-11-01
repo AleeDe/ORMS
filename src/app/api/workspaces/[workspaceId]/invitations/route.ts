@@ -10,7 +10,7 @@ export async function GET(_request: Request, { params }: Context) {
   const supabase = await createClient(workspaceId);
   const { data, error } = await supabase.rpc("orms_is_owner");
   if (error || !data) return NextResponse.json({ error: "Workspace owner access required." }, { status: 403 });
-  return NextResponse.json({ configured: invitationEmailConfigured() });
+  return NextResponse.json({ configured: invitationEmailConfigured(), enabled: invitationEmailEnabled() });
 }
 export async function POST(request: Request, { params }: Context) {
   if (request.headers.get("origin") && request.headers.get("origin") !== new URL(request.url).origin) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });

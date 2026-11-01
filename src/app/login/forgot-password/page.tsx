@@ -11,10 +11,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, MailCheck } from "lucide-react";
+import { authFlowError, passwordResetDestination, requestPasswordReset } from "@/lib/auth-flow";
 
 function ForgotPasswordForm() {
   const supabase = createClient();
   const params = useSearchParams();
+  const next = passwordResetDestination(params.get("next"));
+  const login = `/login?next=${encodeURIComponent(next)}`;
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(
@@ -26,21 +29,18 @@ function ForgotPasswordForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return;
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/auth/confirm?next=/login/update-password`,
-    });
-
-    setLoading(false);
-    if (error) {
-      setError(error.message);
-      return;
-    }
+    try {
+      const { error } = await requestPasswordReset(supabase.auth, email, location.origin, next);
+      if (error) throw error;
     // Always report success, even for an unknown address — telling a stranger
     // whether an account exists would leak who our users are.
-    setSent(true);
+      setSent(true);
+    } catch (error) { setError(authFlowError(error)); }
+    finally { setLoading(false); }
   }
 
   if (sent) {
@@ -51,7 +51,7 @@ function ForgotPasswordForm() {
             <MailCheck className="h-6 w-6" /> Check your email
           </CardTitle>
           <CardDescription>
-            If an account exists for <strong>{email}</strong>, a reset link is on its way.
+            If an account exists for <strong className="break-all">{email}</strong>, a reset link is on its way.
             The link expires in one hour.
           </CardDescription>
         </CardHeader>
@@ -63,7 +63,7 @@ function ForgotPasswordForm() {
             Use a different email
           </Button>
           <Button variant="ghost" className="w-full" asChild>
-            <Link href="/login">
+            <Link href={login}>
               <ArrowLeft className="h-4 w-4 mr-1" /> Back to sign in
             </Link>
           </Button>
@@ -89,16 +89,17 @@ function ForgotPasswordForm() {
               type="email"
               required
               autoFocus
+              disabled={loading}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />
           </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Sending…" : "Send reset link"}
           </Button>
           <Button variant="ghost" className="w-full" asChild>
-            <Link href="/login">
+            <Link href={login}>
               <ArrowLeft className="h-4 w-4 mr-1" /> Back to sign in
             </Link>
           </Button>
