@@ -38,6 +38,7 @@ export default function TeamPage() {
   const endpoint = `/api/workspaces/${workspace.id}/invitations`;
   const { data: emailConfig, isPending: checkingEmail, error: emailConfigError, refetch: retryEmailConfig } = useQuery({ queryKey: ["invitation-email-config"], enabled: isOwner, queryFn: async () => { const response = await fetch(endpoint); if (!response.ok) throw Error("Could not check invitation email availability."); return response.json() as Promise<{ configured: boolean }>; } });
   function refresh() {
+    for (const key of ["campaign-team", "campaign-workflow", "campaign-performance", "campaign-leads"]) client.invalidateQueries({ queryKey: [key] });
     client.invalidateQueries({ queryKey: ["team-data"] });
     client.invalidateQueries({ queryKey: ["campaign-workers"] });
     client.invalidateQueries({ queryKey: ["team-roster"] });

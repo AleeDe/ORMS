@@ -10,6 +10,9 @@ import {
   buildCallDays, callTotals,
 } from "@/lib/tracker";
 import { DailyTracker } from "@/components/daily-tracker";
+import { CampaignPerformanceReport } from "@/components/campaign-performance";
+import { useCampaignTeam } from "@/hooks/use-campaign-team";
+import { fetchAnalyticsActivities } from "@/lib/campaign-workflow";
 import { Badge } from "@/components/ui/badge";
 import { toneClass } from "@/lib/badge-styles";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +26,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
   Legend, ReferenceArea,
 } from "recharts";
-import { format, subDays } from "date-fns";
+import { format, startOfDay, subDays } from "date-fns";
 
 const C_SENDS = "#2a78d6"; // blue — categorical slot 1
 const C_REPLIES = "#1baf7a"; // aqua — slot 2
@@ -42,23 +45,13 @@ export default function AnalyticsPage() {
 
   const days = parseInt(rangeDays);
   const since = useMemo(
-    () => subDays(new Date(), days).toISOString(),
+    () => startOfDay(subDays(new Date(), days - 1)).toISOString(),
     [days]
   );
 
   const { data: activities } = useQuery({
     queryKey: ["analytics-activities", rangeDays, campaignFilter],
-    queryFn: async () => {
-      let q = supabase
-        .from("activities")
-        .select("type, occurred_at, campaign_id")
-        .gte("occurred_at", since)
-        .limit(10000);
-      if (campaignFilter !== "all") q = q.eq("campaign_id", campaignFilter);
-      const { data, error } = await q;
-      if (error) throw error;
-      return data;
-    },
+    queryFn: () => fetchAnalyticsActivities(supabase, since, campaignFilter === "all" ? undefined : campaignFilter),
   });
 
   const { data: campaigns } = useQuery({
@@ -80,6 +73,7 @@ export default function AnalyticsPage() {
       return data;
     },
   });
+  const workflow = useCampaignTeam(campaigns?.[0]?.id ?? null);
 
   const visibleCampaigns = useMemo(
     () =>
@@ -97,7 +91,7 @@ export default function AnalyticsPage() {
     }
     const byDay = new Map(out.map((d) => [d.day, d]));
     for (const a of activities ?? []) {
-      const row = byDay.get(a.occurred_at.slice(0, 10));
+      const row = byDay.get(format(new Date(a.occurred_at), "yyyy-MM-dd"));
       if (!row) continue;
       if (SEND_TYPES.includes(a.type)) row.Sends++;
       if (REPLY_TYPES.includes(a.type)) row.Replies++;
@@ -205,11 +199,10 @@ export default function AnalyticsPage() {
     { label: `Emails Sent (${days}d)`, value: totals.sends },
     { label: "Replies Received", value: totals.replies },
     { label: "Email Reply Rate", value: `${totals.replyRate.toFixed(2)}%` },
-    { label: "Meetings Booked", value: meetingsBooked },
+    { label: workflow.data?.available ? "Booking events" : "Meetings Booked", value: meetingsBooked },
     { label: "Calls Made", value: callsMade },
     { label: "Active Sending Days", value: activeDays },
-    { label: "Lead Reply Rate", value: `${pipeline.leadReplyRate}%` },
-    { label: "Avg Touches per Reply", value: pipeline.touchToReply },
+    ...(!workflow.data?.available ? [{ label: "Lead Reply Rate", value: `${pipeline.leadReplyRate}%` }, { label: "Avg Touches per Reply", value: pipeline.touchToReply }] : []),
   ];
 
   return (
@@ -237,6 +230,8 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {workflow.data?.available && <CampaignPerformanceReport key={campaignFilter} campaignId={campaignFilter === "all" ? null : campaignFilter} range={rangeDays} />}
+      {workflow.data?.available && <div><h2 className="text-xl font-semibold">Outreach activity</h2><p className="mt-1 text-xs text-muted-foreground">These event totals include repeat touches and booking updates. The performance report above counts unique campaign milestones.</p></div>}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {tiles.map((t) => (
           <Card key={t.label}>
@@ -338,7 +333,7 @@ export default function AnalyticsPage() {
         </Card>
       </div>
 
-      <Card>
+      {!workflow.data?.available && <Card>
         <CardHeader>
           <CardTitle className="text-base">
             Pipeline Breakdown{campaignFilter !== "all" ? " — filtered campaign" : ""}
@@ -357,7 +352,7 @@ export default function AnalyticsPage() {
             ))}
           </div>
         </CardContent>
-      </Card>
+      </Card>}
 
       {/* ---- Call performance ---- */}
       {call.dialed > 0 && (
@@ -481,7 +476,7 @@ export default function AnalyticsPage() {
         </>
       )}
 
-      <Card>
+      {!workflow.data?.available && <Card>
         <CardHeader><CardTitle className="text-base">Campaign Performance</CardTitle></CardHeader>
         <CardContent className="overflow-x-auto">
           <Table>
@@ -535,7 +530,7 @@ export default function AnalyticsPage() {
             </TableBody>
           </Table>
         </CardContent>
-      </Card>
+      </Card>}
 
     </div>
   );

@@ -134,6 +134,15 @@ test("simultaneous touches do not overwrite one another or update another campai
   assert.equal(db.rows.activities.length, 2);
 });
 
+test("workflow bookings save the chosen time and use its local date for the reminder", async () => {
+  const db = database(), appointmentAt = new Date("2026-11-12T10:30:00").toISOString();
+  const result = await quickLog(db, { leadId: "shared", campaignId: "a", action: "MEETING_BOOKED", appointmentAt, workflowEnabled: true });
+  assert.equal(db.rows.activities[0].appointment_at, appointmentAt); assert.equal(db.rows.tasks[0].due_date, "2026-11-12");
+  assert.equal(result.statusSuggestion, null);
+  await assert.rejects(quickLog(db, { leadId: "shared", campaignId: "a", action: "MEETING_BOOKED", appointmentAt: "bad", workflowEnabled: true }), /appointment time/);
+  assert.equal(db.rows.activities.length, 1);
+});
+
 test("a follow-up failure reports the saved activity so a retry does not duplicate outreach", async () => {
   const db = database({ failTasks: true });
   const result = await quickLog(db, { leadId: "shared", campaignId: "a", action: "EMAIL_SENT" });

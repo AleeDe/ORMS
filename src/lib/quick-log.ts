@@ -31,7 +31,8 @@ export const STATUS_SUGGESTION: Partial<Record<QuickLogAction, { from: string[];
 // PRD §12.2 auto-task rules
 function autoTask(
   action: QuickLogAction,
-  followupDays: number
+  followupDays: number,
+  appointmentAt?: string
 ): { type: string; title: string; due_date: string } | null {
   switch (action) {
     case "EMAIL_SENT":
@@ -47,12 +48,14 @@ function autoTask(
         title: "Retry call",
         due_date: businessDaysFromNow(1),
       };
-    case "MEETING_BOOKED":
+    case "MEETING_BOOKED": {
+      const meeting = appointmentAt ? new Date(appointmentAt) : null;
       return {
         type: "meeting_reminder",
         title: "Prepare for meeting",
-        due_date: businessDaysFromNow(1),
+        due_date: meeting ? `${meeting.getFullYear()}-${String(meeting.getMonth() + 1).padStart(2, "0")}-${String(meeting.getDate()).padStart(2, "0")}` : businessDaysFromNow(1),
       };
+    }
     default:
       return null; // Reply: user sets next action
   }
@@ -70,6 +73,9 @@ export async function quickLog(
     channel?: string | null;
     /** Which person at the lead was contacted */
     personId?: string | null;
+    /** Appointment time chosen by the setter, stored with the campaign event. */
+    appointmentAt?: string;
+    workflowEnabled?: boolean;
   }
 ): Promise<{ taskCreated: string | null; statusSuggestion: string | null; campaignId: string; warnings: string[] }> {
   if (!opts.campaignId) throw new Error("Choose a campaign before logging outreach.");
@@ -90,6 +96,7 @@ export async function quickLog(
       .eq("id", opts.personId).eq("lead_id", opts.leadId).single();
     if (error) throw new Error("Choose a person linked to this lead.");
   }
+  if (opts.workflowEnabled && opts.action === "MEETING_BOOKED" && opts.appointmentAt && !Number.isFinite(Date.parse(opts.appointmentAt))) throw new Error("Choose a valid appointment time.");
 
   const { error: actErr } = await supabase.from("activities").insert({
     user_id: userId,
@@ -99,6 +106,7 @@ export async function quickLog(
     content: opts.note || null,
     channel,
     person_id: opts.personId || null,
+    ...(opts.workflowEnabled && opts.action === "MEETING_BOOKED" && opts.appointmentAt ? { appointment_at: opts.appointmentAt } : {}),
   });
   if (actErr) throw actErr;
 
@@ -106,7 +114,7 @@ export async function quickLog(
   // retry that would log the same outreach twice.
   const warnings: string[] = [];
   let taskCreated: string | null = null;
-  const task = autoTask(opts.action, followupDays);
+  const task = autoTask(opts.action, followupDays, opts.workflowEnabled ? opts.appointmentAt : undefined);
   if (task) {
     const { error } = await supabase.from("tasks").insert({
       user_id: userId,
@@ -140,7 +148,7 @@ export async function quickLog(
   // status suggestion
   let statusSuggestion: string | null = null;
   const rule = STATUS_SUGGESTION[opts.action];
-  if (opts.campaignId && rule) {
+  if (opts.campaignId && rule && !(opts.workflowEnabled && opts.action === "MEETING_BOOKED")) {
     if (rule.from.includes(membership.status)) statusSuggestion = rule.to;
   }
 
@@ -152,7 +160,7 @@ export const STATUS_LABELS: Record<string, string> = {
   contacted: "Contacted",
   following_up: "Following Up",
   replied: "Replied",
-  interested_meeting: "Interested / Meeting",
+  interested_meeting: "Qualified / Meeting",
   won: "Won",
   lost: "Lost",
   no_fit: "No Fit / No Response",

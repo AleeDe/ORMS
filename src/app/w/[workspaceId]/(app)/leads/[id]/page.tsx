@@ -7,6 +7,9 @@ import { ArrowLeft } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useWorkspace, useWorkspaceClient, useWorkspaceDraft } from "@/components/workspace-provider";
 import { TaskAssignment } from "@/components/task-assignment";
+import { CampaignLeadWorkflow, useCampaignLeadWorkflow } from "@/components/campaign-lead-workflow";
+import { useCampaignTeam } from "@/hooks/use-campaign-team";
+import { canSetAppointment, workflowStatusAllowed } from "@/lib/campaign-workflow";
 import { canWork, canChangeTask } from "@/lib/workspace";
 import {
   quickLog, QUICK_LOG_LABELS, STATUS_LABELS, STATUS_ORDER, type QuickLogAction,
@@ -103,6 +106,12 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
   const activeCampaign = campaignId ?? "";
   const supabase = useWorkspaceClient();
   const queryClient = useQueryClient();
+  const campaignTeam = useCampaignTeam(campaignId);
+  const workflow = useCampaignLeadWorkflow(campaignId, id);
+  const workflowReady = campaignTeam.data?.available === true;
+  const workRole = campaignTeam.data?.members.find(member => member.user_id === access.userId)?.work_role;
+  const bookingAllowed = !campaignTeam.isPending && (workflowReady ? !!workflow.data && !["won", "lost"].includes(workflow.data.workflow_stage) && canSetAppointment(access.role(campaignId), workRole) : writable);
+  const statusAllowed = (status: string) => workflowReady ? !!workflow.data && workflowStatusAllowed(status, access.role(campaignId), workRole, workflow.data, access.userId) : writable;
 
   const [logNote, setLogNote] = useState("");
   const [logChannel, setLogChannel] = useState<string>("");
@@ -187,6 +196,8 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
     queryClient.invalidateQueries({ queryKey: ["notification-feed"] });
     queryClient.invalidateQueries({ queryKey: ["channel-touches", id] });
     queryClient.invalidateQueries({ queryKey: ["team-data"] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-workflow"] });
+    queryClient.invalidateQueries({ queryKey: ["campaign-performance"] });
   }
 
   const doQuickLog = useMutation({
@@ -199,6 +210,8 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
         followupDays: settings?.default_followup_days ?? 3,
         channel: effectiveChannel,
         personId: effectivePerson || null,
+        appointmentAt: vars.meetingAt ? new Date(vars.meetingAt).toISOString() : undefined,
+        workflowEnabled: workflowReady,
       }),
     onSuccess: (res, vars) => {
       const action = vars.action;
@@ -1108,6 +1121,7 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
 
         {/* Right: quick-log + timeline */}
         <div className="min-w-0 space-y-4 lg:col-span-2">
+          {activeMembership && campaignId && <CampaignLeadWorkflow key={`${campaignId}:${id}`} campaignId={campaignId} leadId={id} />}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Log a touch</CardTitle>
@@ -1154,7 +1168,7 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
                     key={a}
                     size="sm"
                     variant="outline"
-                    disabled={doQuickLog.isPending || !activeMembership || !writable}
+                    disabled={doQuickLog.isPending || !activeMembership || !writable || (a === "MEETING_BOOKED" && !bookingAllowed)}
                     onClick={() => {
                       // Meeting Booked asks for a time first (then logs + syncs to calendar).
                       if (a === "MEETING_BOOKED") {
@@ -1185,7 +1199,7 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
                   </div>
                   <Button
                     size="sm"
-                    disabled={doQuickLog.isPending || !meetingAt || !activeMembership || !writable}
+                    disabled={doQuickLog.isPending || !meetingAt || !activeMembership || !writable || !bookingAllowed}
                     onClick={() =>
                       doQuickLog.mutate({ action: "MEETING_BOOKED", meetingAt: meetingAt! })
                     }
@@ -1213,7 +1227,7 @@ function LeadWorkspace({ id, campaignId }: { id: string; campaignId: string | nu
                         key={s}
                         size="sm"
                         variant={statusTarget?.status === s ? "default" : "secondary"}
-                        disabled={applyStatus.isPending || !statusTargetId || statusTarget?.status === s || !writable}
+                        disabled={applyStatus.isPending || !statusTargetId || statusTarget?.status === s || !statusAllowed(s)}
                         onClick={() => applyStatus.mutate({ campaignId: statusTargetId, to: s })}
                       >
                         {STATUS_LABELS[s]}

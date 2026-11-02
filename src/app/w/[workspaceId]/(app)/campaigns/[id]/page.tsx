@@ -4,7 +4,12 @@ import { use, useMemo, useState } from "react";
 import Link from "@/components/workspace-link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useWorkspace, useWorkspaceClient } from "@/components/workspace-provider";
-import { canWork } from "@/lib/workspace";
+import { canManage, canWork } from "@/lib/workspace";
+import { useCampaignTeam } from "@/hooks/use-campaign-team";
+import { CampaignTeamRoles } from "@/components/campaign-team-roles";
+import { CampaignPerformanceReport } from "@/components/campaign-performance";
+import { WORKFLOW_FIELDS, workflowStatusAllowed, type WorkflowLead } from "@/lib/campaign-workflow";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { STATUS_LABELS, STATUS_ORDER } from "@/lib/quick-log";
 import { statusClass } from "@/lib/badge-styles";
 import { leadHref } from "@/lib/campaign-scope";
@@ -33,6 +38,10 @@ type CampaignLead = {
   status: string;
   touch_count: number;
   last_contacted_at: string | null;
+  workflow_stage?: WorkflowLead["workflow_stage"];
+  assigned_closer_id?: string | null;
+  qualified_by?: string | null;
+  appointment_at?: string | null;
   leads: {
     id: string;
     business_name: string;
@@ -47,12 +56,18 @@ export default function CampaignDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const { isOwner, role } = useWorkspace();
+  const { isOwner, role, userId } = useWorkspace();
   const writable = canWork(role(id));
   const supabase = useWorkspaceClient();
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(0);
+  const [view, setView] = useState("all");
+  const team = useCampaignTeam(id);
+  const workflowReady = team.data?.available === true;
+  const workRole = team.data?.members.find(member => member.user_id === userId)?.work_role;
+  const canReport = canManage(role(id));
+  const workerLabel = (user: string | null | undefined) => team.data?.members.find(member => member.user_id === user)?.label ?? (user ? "Former member" : "Unassigned");
   const [leadFilters, setLeadFilters] = useState<LeadFilters>(EMPTY_LEAD_FILTERS);
 
   const patchLeadFilters = (patch: Partial<LeadFilters>) => {
@@ -81,18 +96,19 @@ export default function CampaignDetailPage({
   });
 
   const { data: leadsPage, isLoading, error: leadsError } = useQuery({
-    queryKey: ["campaign-leads", id, statusFilter, page, leadFilters, filteredLeadIds],
+    queryKey: ["campaign-leads", id, statusFilter, page, leadFilters, filteredLeadIds, workflowReady, view],
     // Wait for the id resolution rather than flashing unfiltered rows first.
     enabled: !filtersActive || Array.isArray(filteredLeadIds),
     queryFn: async () => {
       let q = supabase
         .from("campaign_leads")
         .select(
-          "id, status, touch_count, last_contacted_at, leads!campaign_leads_lead_id_fkey(id, business_name, website, custom_fields)",
+          `id, status, touch_count, last_contacted_at, ${workflowReady ? `${WORKFLOW_FIELDS}, ` : ""}leads!campaign_leads_lead_id_fkey(id, business_name, website, custom_fields)`,
           { count: "exact" }
         )
         .eq("campaign_id", id);
       if (statusFilter !== "all") q = q.eq("status", statusFilter);
+      if (workflowReady && ["prospecting", "qualified", "won", "lost"].includes(view)) q = q.eq("workflow_stage", view);
       if (filtersActive) q = q.in("lead_id", filteredLeadIds ?? []);
       const { data, count, error } = await q
         .order("added_at", { ascending: false })
@@ -104,24 +120,28 @@ export default function CampaignDetailPage({
   });
   const rows = leadsPage?.rows;
 
-  const { data: statCounts } = useQuery({
-    queryKey: ["campaign-stats", id],
+  const { data: statCounts, error: statsError } = useQuery({
+    queryKey: ["campaign-stats", id, workflowReady],
     queryFn: async () => {
       const base = () =>
         supabase.from("campaign_leads").select("id", { count: "exact", head: true }).eq("campaign_id", id);
-      const [total, contacted, replied, meetings, won] = await Promise.all([
+      const results = await Promise.all([
         base(),
         base().or("touch_count.gt.0,status.neq.new"),
         base().in("status", ["replied", "interested_meeting", "won"]),
         base().in("status", ["interested_meeting", "won"]),
         base().eq("status", "won"),
+        ...(workflowReady ? [base().eq("workflow_stage", "prospecting"), base().eq("workflow_stage", "qualified"), base().eq("workflow_stage", "lost")] : []),
       ]);
+      const failed = results.find(result => result.error); if (failed?.error) throw failed.error;
+      const [total, contacted, replied, meetings, won, prospecting, qualified, lost] = results;
       return {
         total: total.count ?? 0,
         contacted: contacted.count ?? 0,
         replied: replied.count ?? 0,
         meetings: meetings.count ?? 0,
         won: won.count ?? 0,
+        prospecting: prospecting?.count ?? 0, qualified: qualified?.count ?? 0, lost: lost?.count ?? 0,
       };
     },
   });
@@ -147,12 +167,14 @@ export default function CampaignDetailPage({
       queryClient.invalidateQueries({ queryKey: ["analytics-campaigns"] });
       queryClient.invalidateQueries({ queryKey: ["analytics-activities"] });
       queryClient.invalidateQueries({ queryKey: ["activities"] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-workflow"] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-performance"] });
       toast.success("Status updated");
     },
     onError: (e) => toast.error(e.message),
   });
 
-  const stats = statCounts ?? { total: 0, contacted: 0, replied: 0, meetings: 0, won: 0 };
+  const stats = statCounts ?? { total: 0, contacted: 0, replied: 0, meetings: 0, won: 0, prospecting: 0, qualified: 0, lost: 0 };
   const filtered = rows ?? [];
   const totalPages = Math.max(1, Math.ceil((leadsPage?.count ?? 0) / PAGE_SIZE));
 
@@ -183,16 +205,17 @@ export default function CampaignDetailPage({
         <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" />
         <div><p className="font-semibold">One campaign. Its own progress.</p><p className="mt-1 text-muted-foreground">Open a lead to log touches, notes, and follow-ups here. The same lead can follow a completely different journey in another campaign.</p></div>
       </div>
-      {(campaignError || leadsError) && <p role="alert" className="text-sm text-destructive">{campaignError?.message ?? leadsError?.message}</p>}
+      {(campaignError || leadsError || statsError) && <p role="alert" className="text-sm text-destructive">{campaignError?.message ?? leadsError?.message ?? statsError?.message}</p>}
       {campaign && isOwner && <CampaignChannelSettings key={`${id}:${campaign.default_channel ?? "per_touch"}`} campaignId={id} initial={(campaign.default_channel as ContactChannel | null) ?? null} />}
       {campaign && !isOwner && <p className="text-sm text-muted-foreground">Your role: <strong className="capitalize">{role(id)}</strong>{!writable && ". This campaign is read-only."}</p>}
+      {campaign && <CampaignTeamRoles campaignId={id} />}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         {[
           ["Total Leads", stats.total],
           ["Contacted", stats.contacted],
           ["Replied", stats.replied],
-          ["Meetings", stats.meetings],
+          [workflowReady ? "Qualified queue" : "Meetings", workflowReady ? stats.qualified : stats.meetings],
           ["Won", stats.won],
         ].map(([label, value]) => (
           <Card key={label}>
@@ -204,6 +227,8 @@ export default function CampaignDetailPage({
         ))}
       </div>
 
+      {workflowReady && <div className="overflow-x-auto pb-1"><Tabs value={view} onValueChange={value => { setView(value); setPage(0); setStatusFilter("all"); }}><TabsList aria-label="Campaign lead pipeline" className="min-h-11"><TabsTrigger value="all">All leads ({stats.total})</TabsTrigger><TabsTrigger value="prospecting">Prospecting ({stats.prospecting})</TabsTrigger><TabsTrigger value="qualified">Qualified ({stats.qualified})</TabsTrigger><TabsTrigger value="won">Won ({stats.won})</TabsTrigger><TabsTrigger value="lost">Lost / not a fit ({stats.lost})</TabsTrigger>{canReport && <TabsTrigger value="performance">Performance</TabsTrigger>}</TabsList></Tabs></div>}
+      {view === "performance" && workflowReady && canReport ? <CampaignPerformanceReport key={id} campaignId={id} /> : <>
       {/* Same filter vocabulary as /leads, so a campaign can be sliced the same
           way. The lead-side ones resolve through lib/lead-filters.ts. */}
       <div className="flex flex-wrap items-center gap-2">
@@ -314,6 +339,7 @@ export default function CampaignDetailPage({
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Touches</TableHead>
               <TableHead>Last Contacted</TableHead>
+              {workflowReady && <><TableHead>Qualified by</TableHead><TableHead>Closer</TableHead><TableHead>Appointment</TableHead></>}
               {dynamicColumns.map((k) => (
                 <TableHead key={k} className="max-w-40 truncate" title={k}>{k}</TableHead>
               ))}
@@ -322,13 +348,13 @@ export default function CampaignDetailPage({
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={4 + dynamicColumns.length} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={4 + dynamicColumns.length + (workflowReady ? 3 : 0)} className="py-8 text-center text-muted-foreground">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : !filtered.length ? (
               <TableRow>
-                <TableCell colSpan={4 + dynamicColumns.length} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={4 + dynamicColumns.length + (workflowReady ? 3 : 0)} className="py-8 text-center text-muted-foreground">
                   No leads. Add leads from the Leads table (select → Add to Campaign).
                 </TableCell>
               </TableRow>
@@ -350,12 +376,12 @@ export default function CampaignDetailPage({
                         updateStatus.mutate({ clId: r.id, leadId: r.leads.id, to: v })
                       }
                     >
-                      <SelectTrigger disabled={!writable} className={`h-7 w-44 border-0 text-xs font-medium ${statusClass(r.status)}`}>
+                      <SelectTrigger disabled={!writable || (workflowReady && ["won", "lost"].includes(r.workflow_stage ?? "") && !canReport)} className={`h-7 w-44 border-0 text-xs font-medium ${statusClass(r.status)}`}>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         {STATUS_ORDER.map((s) => (
-                          <SelectItem key={s} value={s}>{STATUS_LABELS[s]}</SelectItem>
+                          <SelectItem key={s} value={s} disabled={workflowReady && !workflowStatusAllowed(s, role(id), workRole, { workflow_stage: r.workflow_stage ?? "prospecting", assigned_closer_id: r.assigned_closer_id ?? null }, userId)}>{STATUS_LABELS[s]}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -366,6 +392,7 @@ export default function CampaignDetailPage({
                       ? new Date(r.last_contacted_at).toLocaleDateString()
                       : "—"}
                   </TableCell>
+                  {workflowReady && <><TableCell className="max-w-48 break-words whitespace-normal text-xs">{workerLabel(r.qualified_by)}</TableCell><TableCell className="max-w-48 break-words whitespace-normal text-xs">{workerLabel(r.assigned_closer_id)}</TableCell><TableCell className="whitespace-nowrap text-xs">{r.appointment_at ? new Date(r.appointment_at).toLocaleString() : "—"}</TableCell></>}
                   {dynamicColumns.map((k) => (
                     <TableCell
                       key={k}
@@ -400,6 +427,7 @@ export default function CampaignDetailPage({
           </Button>
         </div>
       </div>
+      </>}
     </div>
   );
 }

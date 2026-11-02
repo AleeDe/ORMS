@@ -102,6 +102,7 @@ function TasksInner() {
       setAdding(false);
       setAddForm({ title: "", due_date: today, lead_id: "", campaign_id: "" });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-performance"] });
       queryClient.invalidateQueries({ queryKey: ["alert-count"] });
       queryClient.invalidateQueries({ queryKey: ["lead-tasks"] });
       queryClient.invalidateQueries({ queryKey: ["no-next-step"] });
@@ -126,6 +127,7 @@ function TasksInner() {
       queryClient.invalidateQueries({ queryKey: ["notification-feed"] });
       queryClient.invalidateQueries({ queryKey: ["lead-tasks"] });
       queryClient.invalidateQueries({ queryKey: ["team-data"] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-performance"] });
     },
   });
 
