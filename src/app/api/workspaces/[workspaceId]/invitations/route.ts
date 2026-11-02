@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { invitationEmailConfigured, invitationEmailEnabled, sendInvitationEmail } from "@/lib/invitation-email";
 import { invitationOrigin, invitationRequest } from "@/lib/invitations";
+import { remoteInvitationEmailConfigured, sendRemoteInvitationEmail } from "@/lib/remote-invitation-email";
 
 type Context = { params: Promise<{ workspaceId: string }> };
 export async function GET(_request: Request, { params }: Context) {
@@ -10,7 +11,8 @@ export async function GET(_request: Request, { params }: Context) {
   const supabase = await createClient(workspaceId);
   const { data, error } = await supabase.rpc("orms_is_owner");
   if (error || !data) return NextResponse.json({ error: "Workspace owner access required." }, { status: 403 });
-  return NextResponse.json({ configured: invitationEmailConfigured(), enabled: invitationEmailEnabled() });
+  const configured = invitationEmailConfigured() || (invitationEmailEnabled() && await remoteInvitationEmailConfigured(supabase));
+  return NextResponse.json({ configured, enabled: invitationEmailEnabled() });
 }
 export async function POST(request: Request, { params }: Context) {
   if (request.headers.get("origin") && request.headers.get("origin") !== new URL(request.url).origin) return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
@@ -29,9 +31,15 @@ export async function POST(request: Request, { params }: Context) {
   const { data, error } = await supabase.rpc("orms_create_invitation", { p_email: parsed.data.email, p_grants: parsed.data.grants });
   if (error) return NextResponse.json({ error: error.message }, { status: error.code === "42501" ? 403 : error.message.startsWith("Invitation limit reached") ? 429 : 400 });
   const url = `${origin}/join/${data.token}`;
-  const delivery = await sendInvitationEmail({ id: data.id, email: data.email, workspaceName: data.workspace_name, inviterEmail: auth.user.email ?? "Your workspace owner", url });
-  let trackingError = false;
-  try { const result = await createAdminClient().rpc("orms_mark_invitation_delivery", { p_id: data.id, p_status: delivery }); trackingError = Boolean(result.error); } catch { trackingError = true; }
+  const remote = !invitationEmailConfigured() && invitationEmailEnabled();
+  const result = remote ? await sendRemoteInvitationEmail(supabase, { id: data.id, token: data.token }) : {
+    delivery: await sendInvitationEmail({ id: data.id, email: data.email, workspaceName: data.workspace_name, inviterEmail: auth.user.email ?? "Your workspace owner", url }), trackingError: false,
+  };
+  const { delivery } = result;
+  let trackingError = result.trackingError;
+  if (!remote) {
+    try { const tracked = await createAdminClient().rpc("orms_mark_invitation_delivery", { p_id: data.id, p_status: delivery }); trackingError = Boolean(tracked.error); } catch { trackingError = true; }
+  }
   return NextResponse.json({ id: data.id, url, email: data.email, expires_at: data.expires_at, delivery,
     warning: delivery === "not_configured" && invitationEmailEnabled() ? "Email delivery is not configured yet. You can copy and share the invitation link." : delivery === "failed" ? "We could not confirm that the email was sent. You can share this link or send a new invitation." : trackingError ? "The invitation's status could not be saved. You can still share this link." : undefined,
   }, { status: 201 });
