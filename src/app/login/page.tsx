@@ -12,6 +12,8 @@ import { LoginBrand, LoginShowcase } from "@/components/login-showcase";
 import { safeReturnPath } from "@/lib/workspace";
 import { SlidingCapsule } from "@/components/ui/sliding-capsule";
 import { EmailVerification } from "@/components/email-verification";
+import { EmailAlreadyRegisteredError, signUpWithAvailableEmail } from "@/lib/signup-email";
+import { useSignupEmail } from "@/hooks/use-signup-email";
 
 function LoginForm() {
   const router = useRouter();
@@ -33,10 +35,13 @@ function LoginForm() {
   const [confirmationEmail, setConfirmationEmail] = useState<string | null>(null);
   const [confirmationSent, setConfirmationSent] = useState(false);
   const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const signupEmail = useSignupEmail(supabase, email, mode === "signup" && !confirmationEmail);
+  const submitting = useRef(false);
   const busy = loading || navigating;
 
   function switchMode(next: "signin" | "signup") {
     setMode(next);
+    signupEmail.reset();
     setPassword("");
     setShowPassword(false);
     setCapsLock(false);
@@ -59,7 +64,7 @@ function LoginForm() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || submitting.current || (mode === "signup" && signupEmail.status !== "available")) return;
     setError(null);
     const validEmail = validateEmail();
     const passwordMessage = !password ? "Enter your password." : mode === "signup" && password.length < 6 ? "Use at least 6 characters for your password." : null;
@@ -68,12 +73,14 @@ function LoginForm() {
       (validEmail ? passwordInput : emailInput).current?.focus();
       return;
     }
+    submitting.current = true;
     setLoading(true);
     try {
       const { data, error: authError } = mode === "signin"
         ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
-        : await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: `${location.origin}/auth/confirm?next=${encodeURIComponent(next)}` } });
+        : await signUpWithAvailableEmail(supabase, email, password, `${location.origin}/auth/confirm?next=${encodeURIComponent(next)}`);
       if (authError) {
+        if (mode === "signup") signupEmail.reset();
         if (authError.code === "email_not_confirmed") { setConfirmationEmail(email.trim().toLowerCase()); setConfirmationSent(false); return; }
         setError(authError.code === "invalid_credentials"
           ? "That email and password don’t match. Check them and try again."
@@ -95,9 +102,12 @@ function LoginForm() {
       setNavigating(true);
       router.replace(next);
       router.refresh();
-    } catch {
+    } catch (error) {
+      if (error instanceof EmailAlreadyRegisteredError) { signupEmail.markExisting(); return; }
+      if (mode === "signup") signupEmail.markError();
       setError("We couldn’t connect right now. Check your connection and try again.");
     } finally {
+      submitting.current = false;
       setLoading(false);
     }
   }
@@ -121,8 +131,16 @@ function LoginForm() {
             <form noValidate onSubmit={handleSubmit} className="space-y-5" aria-busy={busy}>
               <div className="space-y-2">
                 <Label htmlFor="email" className="text-sm font-medium">Email address</Label>
-                <div className="relative"><Mail aria-hidden="true" className="pointer-events-none absolute left-3.5 top-4 size-4 text-muted-foreground" /><Input ref={emailInput} id="email" name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} required disabled={busy} aria-invalid={!!emailError} aria-describedby={emailError ? "email-error" : undefined} className="h-12 rounded-xl bg-background/40 pl-11 text-base! placeholder:text-muted-foreground/60" placeholder="you@company.com" value={email} onBlur={validateEmail} onChange={(event) => { setEmail(event.target.value); setEmailError(null); setError(null); }} /></div>
+                <div className="relative"><Mail aria-hidden="true" className="pointer-events-none absolute left-3.5 top-4 size-4 text-muted-foreground" /><Input ref={emailInput} id="email" name="email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} required disabled={busy} aria-invalid={!!emailError || (mode === "signup" && signupEmail.status === "existing")} aria-describedby={[emailError ? "email-error" : "", mode === "signup" ? "signup-email-status" : ""].filter(Boolean).join(" ") || undefined} className="h-12 rounded-xl bg-background/40 pl-11 text-base! placeholder:text-muted-foreground/60" placeholder="you@company.com" value={email} onBlur={validateEmail} onChange={(event) => { setEmail(event.target.value); signupEmail.reset(); setEmailError(null); setError(null); }} /></div>
                 {emailError && <p id="email-error" role="alert" className="text-xs text-destructive">{emailError}</p>}
+                {mode === "signup" && <div id="signup-email-status" role="status" aria-live="polite" className="text-xs leading-5">
+                  {signupEmail.status === "idle" && <p className="text-muted-foreground">Enter a new email address to create an account.</p>}
+                  {signupEmail.status === "invalid" && !emailError && <p className="text-muted-foreground">Enter a valid email address to check availability.</p>}
+                  {signupEmail.status === "checking" && <p className="flex items-center gap-1.5 text-muted-foreground"><LoaderCircle className="size-3.5 motion-safe:animate-spin" />Checking email availability…</p>}
+                  {signupEmail.status === "available" && <p className="flex items-center gap-1.5 text-teal-700 dark:text-teal-300"><CheckCircle2 className="size-3.5" />This email is available.</p>}
+                  {signupEmail.status === "existing" && <div className="space-y-1.5"><p className="text-destructive">{signupEmail.message}</p><div className="flex flex-wrap gap-x-4 gap-y-1"><button type="button" className="min-h-8 font-medium text-primary hover:underline" onClick={() => switchMode("signin")}>Sign in instead</button><Link className="inline-flex min-h-8 items-center font-medium text-primary hover:underline" href={`/login/forgot-password?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email.trim().toLowerCase())}`}>Reset password</Link></div></div>}
+                  {signupEmail.status === "error" && <div><p className="text-destructive">{signupEmail.message}</p><button type="button" className="min-h-8 font-medium text-primary hover:underline" onClick={signupEmail.reset}>Check again</button></div>}
+                </div>}
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2"><Label htmlFor="password" className="text-sm font-medium">Password</Label>{mode === "signin" && <Link href={`/login/forgot-password?next=${encodeURIComponent(next)}`} className="inline-flex min-h-7 items-center rounded text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-primary">Forgot password?</Link>}</div>
@@ -132,7 +150,7 @@ function LoginForm() {
                 {mode === "signup" && <div id="password-hint" className="space-y-2.5 pt-1"><p className={`flex items-center gap-1.5 text-xs ${password.length >= 6 ? "text-teal-700 dark:text-teal-300" : "text-muted-foreground"}`}>{password.length >= 6 ? <CheckCircle2 className="size-3.5" /> : <span className="size-3.5 rounded-full border border-current opacity-40" />} At least 6 characters</p><p className="text-xs leading-5 text-muted-foreground">A longer, unique password is even better.</p></div>}
               </div>
               {error && <div role="alert" className="flex items-start gap-2.5 rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive"><CircleAlert className="mt-0.5 size-4 shrink-0" /><p>{error}</p></div>}
-              <Button type="submit" className="group h-12 w-full rounded-xl text-sm shadow-sm motion-safe:active:scale-[0.99]" disabled={busy}>{busy ? <><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />{navigating ? "Opening your workspace…" : mode === "signin" ? "Signing you in…" : "Creating your account…"}</> : <>{mode === "signin" ? "Sign in to your workspace" : "Create your account"}<ArrowRight className="size-4 transition-transform motion-safe:group-hover:translate-x-0.5" /></>}</Button>
+              <Button type="submit" className="group h-12 w-full rounded-xl text-sm shadow-sm motion-safe:active:scale-[0.99]" disabled={busy || (mode === "signup" && signupEmail.status !== "available")}>{busy ? <><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />{navigating ? "Opening your workspace…" : mode === "signin" ? "Signing you in…" : "Creating your account…"}</> : <>{mode === "signin" ? "Sign in to your workspace" : "Create your account"}<ArrowRight className="size-4 transition-transform motion-safe:group-hover:translate-x-0.5" /></>}</Button>
               <p className="sr-only" role="status">{busy ? navigating ? "Opening your workspace" : "Please wait while we check your details" : ""}</p>
             </form>
           </div>

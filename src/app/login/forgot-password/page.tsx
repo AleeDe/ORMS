@@ -18,7 +18,7 @@ function ForgotPasswordForm() {
   const params = useSearchParams();
   const next = passwordResetDestination(params.get("next"));
   const login = `/login?next=${encodeURIComponent(next)}`;
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(params.get("email") ?? "");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(
     params.get("error") === "invalid_link"
